@@ -10,27 +10,23 @@
 #' @useDynLib freestiler, .registration = TRUE
 NULL
 
-#' Create vector tiles from spatial data
+#' Create vector tiles from spatial data (multi-layer support)
 #'
-#' @param geometries sfc list of sfg geometry objects
-#' @param geom_types Character vector of geometry types
-#' @param prop_names Character vector of property column names
-#' @param prop_types Character vector of property types
-#' @param prop_char_values List of character property columns
-#' @param prop_num_values List of numeric property columns
-#' @param prop_int_values List of integer property columns
-#' @param prop_lgl_values List of logical property columns
+#' @param layers List of layer lists
 #' @param output_path Path for output .pmtiles file
-#' @param layer_name Name of the tile layer
 #' @param tile_format "mvt" or "mlt"
-#' @param min_zoom Minimum zoom level
-#' @param max_zoom Maximum zoom level
+#' @param global_min_zoom Minimum zoom level
+#' @param global_max_zoom Maximum zoom level
 #' @param do_simplify Whether to simplify geometries at lower zooms
 #' @param generate_ids Whether to generate sequential feature IDs
 #' @param quiet Whether to suppress progress messages
+#' @param drop_rate Exponential drop rate (negative = off)
+#' @param cluster_distance Pixel distance for clustering (negative = off)
+#' @param cluster_maxzoom Max zoom for clustering (negative = use max_zoom - 1)
+#' @param do_coalesce Whether to coalesce features with same attributes
 #' @return The output file path or an error message
 #' @keywords internal
-rust_freestile <- function(geometries, geom_types, prop_names, prop_types, prop_char_values, prop_num_values, prop_int_values, prop_lgl_values, output_path, layer_name, tile_format, min_zoom, max_zoom, do_simplify, generate_ids, quiet) .Call(wrap__rust_freestile, geometries, geom_types, prop_names, prop_types, prop_char_values, prop_num_values, prop_int_values, prop_lgl_values, output_path, layer_name, tile_format, min_zoom, max_zoom, do_simplify, generate_ids, quiet)
+rust_freestile <- function(layers, output_path, tile_format, global_min_zoom, global_max_zoom, do_simplify, generate_ids, quiet, drop_rate, cluster_distance, cluster_maxzoom, do_coalesce) .Call(wrap__rust_freestile, layers, output_path, tile_format, global_min_zoom, global_max_zoom, do_simplify, generate_ids, quiet, drop_rate, cluster_distance, cluster_maxzoom, do_coalesce)
 
 
 # nolint end

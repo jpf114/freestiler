@@ -11,3 +11,7 @@ src/*.dll
 .RData
 .Rproj.user
 examples/
+python/target/
+python/.venv/
+__pycache__/
+*.pyc

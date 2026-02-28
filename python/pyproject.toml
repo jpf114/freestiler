@@ -1,0 +1,24 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "freestiler"
+version = "0.1.0"
+description = "Rust-powered MLT/MVT vector tile engine for Python"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = [
+    "geopandas>=0.14",
+    "shapely>=2.0",
+    "pyproj>=3.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+python-source = "python"
+module-name = "freestiler._freestiler"
