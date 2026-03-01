@@ -95,10 +95,8 @@ freestile(
 
 ## Future work
 
-- Multi-layer support
-- Feature dropping at lower zooms (density-based, beyond current sub-pixel filter)
-- Point clustering
-- Feature coalescing
+- Fix tile boundary seam artifacts (visible at zoom 6-8; geometry verified correct in adjacent tiles, winding correct, no dropped features — root cause still under investigation)
+- `base_zoom` parameter: zoom level at which features stop being dropped, ensuring all features are present for client-side counting/querying (inspired by tippecanoe's `--base-zoom` / `-B`)
 - Advanced MLT encodings (FastPFOR, FSST)
 - Direct file input (GeoJSON, GeoPackage)
 - Integration with pmtiles package (`pm_create(engine = "freestiler")`)

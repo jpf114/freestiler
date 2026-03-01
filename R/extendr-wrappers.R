@@ -26,7 +26,7 @@ NULL
 #' @param do_coalesce Whether to coalesce features with same attributes
 #' @return The output file path or an error message
 #' @keywords internal
-rust_freestile <- function(layers, output_path, tile_format, global_min_zoom, global_max_zoom, do_simplify, generate_ids, quiet, drop_rate, cluster_distance, cluster_maxzoom, do_coalesce) .Call(wrap__rust_freestile, layers, output_path, tile_format, global_min_zoom, global_max_zoom, do_simplify, generate_ids, quiet, drop_rate, cluster_distance, cluster_maxzoom, do_coalesce)
+rust_freestile <- function(layers, output_path, tile_format, global_min_zoom, global_max_zoom, base_zoom, do_simplify, generate_ids, quiet, drop_rate, cluster_distance, cluster_maxzoom, do_coalesce) .Call(wrap__rust_freestile, layers, output_path, tile_format, global_min_zoom, global_max_zoom, base_zoom, do_simplify, generate_ids, quiet, drop_rate, cluster_distance, cluster_maxzoom, do_coalesce)
 
 
 # nolint end

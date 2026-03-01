@@ -33,6 +33,10 @@ serde_json = "1"
 # Parallel tile encoding
 rayon = "1.10"
 
+[dev-dependencies]
+# MapLibre reference MLT decoder — used for conformance fixture tests
+mlt-core = "0.1.2"
+
 [profile.release]
 lto = true
 codegen-units = 1

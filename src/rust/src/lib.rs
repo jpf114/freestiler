@@ -52,6 +52,7 @@ fn rust_freestile(
     tile_format: &str,
     global_min_zoom: i32,
     global_max_zoom: i32,
+    base_zoom: i32,
     do_simplify: bool,
     generate_ids: bool,
     quiet: bool,
@@ -232,13 +233,18 @@ fn rust_freestile(
                 })
                 .collect();
 
-            // Compute drop mask (not for clustered features)
-            let drop_mask = if use_drop && !using_clusters {
+            // Compute drop mask (not for clustered features, not at or above base_zoom)
+            // base_z defaults to each layer's own max_zoom (not global) for correct
+            // multi-layer behavior — a layer ending at z6 shouldn't drop at z5.
+            // Drop curve is computed relative to base_z, not max_zoom: at zoom 0 with
+            // base_zoom=4, threshold is drop_rate^(4-0), not drop_rate^(max-0).
+            let layer_base_z = if base_zoom < 0 { layer.max_zoom } else { base_zoom as u8 };
+            let drop_mask = if use_drop && !using_clusters && zoom < layer_base_z {
                 Some(drop::compute_drop_mask(
                     features,
                     &spatial_indices[li],
                     zoom,
-                    max_z,
+                    layer_base_z,
                     drop_rate,
                     pixel_deg,
                 ))
@@ -325,6 +331,20 @@ fn rust_freestile(
                                 })
                             })
                             .collect();
+
+                        // Sort features spatially (Morton curve) for better compression
+                        if tile_feats.len() > 1 {
+                            let tb = tiler::tile_bounds(&coord);
+                            let tw = tb.min().x;
+                            let te = tb.max().x;
+                            let ts = tb.min().y;
+                            let tn = tb.max().y;
+                            tile_feats.sort_by(|a, b| {
+                                let key_a = tiler::tile_morton_key(&a.geometry, tw, te, ts, tn);
+                                let key_b = tiler::tile_morton_key(&b.geometry, tw, te, ts, tn);
+                                key_a.cmp(&key_b).then(a.id.cmp(&b.id))
+                            });
+                        }
 
                         // Coalesce features within this tile/layer
                         if do_coalesce && !tile_feats.is_empty() {
