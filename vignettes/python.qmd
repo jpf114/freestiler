@@ -1,0 +1,185 @@
+---
+title: "Python Companion"
+vignette: >
+  %\VignetteIndexEntry{Python Companion}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r}
+#| include: false
+#| eval: false
+library(freestiler)
+```
+
+## Overview
+
+freestiler has a Python companion package that shares the same Rust engine. It
+accepts GeoDataFrames (via GeoPandas) and produces the same PMTiles output. The
+Python package lives in the `python/` subdirectory of the freestiler repository.
+
+## Installation
+
+Install from source using pip (requires Rust toolchain):
+
+```bash
+cd python
+pip install -e .
+```
+
+Or build with maturin directly:
+
+```bash
+cd python
+maturin develop --release
+```
+
+## Basic usage
+
+```python
+import geopandas as gpd
+from freestiler import freestile
+
+gdf = gpd.read_file("nc.shp")
+
+freestile(gdf, "nc_counties.pmtiles", layer_name="counties")
+```
+
+```
+Creating MLT tiles (zoom 0-14) for 100 features across 1 layer...
+  Tiling layer 'counties' (zoom 0-14)...
+Created nc_counties.pmtiles (65.2 KB)
+```
+
+## R vs Python API
+
+The Python API mirrors R closely, with Pythonic conventions:
+
+| Feature | R | Python |
+|---------|---|--------|
+| Input type | sf data frame | GeoDataFrame |
+| Multi-layer | Named list of sf objects | Dict of GeoDataFrames |
+| Default format | `"mlt"` | `"mlt"` |
+| Zoom range | `min_zoom = 0, max_zoom = 14` | `min_zoom=0, max_zoom=14` |
+| Feature dropping | `drop_rate = 2.5` | `drop_rate=2.5` |
+| Base zoom | `base_zoom = 10` | `base_zoom=10` |
+| Point clustering | `cluster_distance = 50` | `cluster_distance=50` |
+| Feature coalescing | `coalesce = TRUE` | `coalesce=True` |
+| Layer helper | `freestile_layer()` | (use dict directly) |
+
+## MVT output
+
+```python
+freestile(gdf, "nc_mvt.pmtiles",
+    layer_name="counties",
+    tile_format="mvt"
+)
+```
+
+## Multi-layer tiles
+
+Pass a dictionary mapping layer names to GeoDataFrames:
+
+```python
+import geopandas as gpd
+from freestiler import freestile
+
+counties = gpd.read_file("counties.shp")
+roads = gpd.read_file("roads.shp")
+
+freestile(
+    {"counties": counties, "roads": roads},
+    "layers.pmtiles"
+)
+```
+
+## Feature dropping and base_zoom
+
+```python
+freestile(gdf, "dropped.pmtiles",
+    layer_name="counties",
+    drop_rate=2.5,
+    base_zoom=10
+)
+```
+
+## Point clustering
+
+```python
+points = gpd.read_file("points.shp")
+
+freestile(points, "clustered.pmtiles",
+    layer_name="points",
+    cluster_distance=50,
+    cluster_maxzoom=8
+)
+```
+
+## Feature coalescing
+
+```python
+freestile(gdf, "coalesced.pmtiles",
+    layer_name="counties",
+    coalesce=True
+)
+```
+
+## Viewing tiles
+
+### With maplibre-py
+
+```python
+import maplibre
+from maplibre import Map, MapOptions
+from maplibre.sources import VectorTileSource
+from maplibre.layers import Layer, LayerType
+
+source = VectorTileSource(url="pmtiles://nc_counties.pmtiles")
+
+layer = Layer(
+    type=LayerType.FILL,
+    id="counties",
+    source="counties-source",
+    source_layer="counties",
+    paint={"fill-color": "#00897b", "fill-opacity": 0.5}
+)
+
+m = Map(MapOptions(center=[-79.5, 35.5], zoom=6))
+m.add_source("counties-source", source)
+m.add_layer(layer)
+m
+```
+
+### In a web browser
+
+PMTiles files can be served from any static file host and viewed with MapLibre
+GL JS using the [PMTiles protocol](https://docs.protomaps.com/pmtiles/):
+
+```html
+<script src="https://unpkg.com/pmtiles/dist/pmtiles.js"></script>
+<script src="https://unpkg.com/maplibre-gl/dist/maplibre-gl.js"></script>
+<script>
+  let protocol = new pmtiles.Protocol();
+  maplibregl.addProtocol("pmtiles", protocol.tile);
+
+  new maplibregl.Map({
+    container: "map",
+    style: {
+      version: 8,
+      sources: {
+        counties: {
+          type: "vector",
+          url: "pmtiles://nc_counties.pmtiles"
+        }
+      },
+      layers: [{
+        id: "county-fill",
+        type: "fill",
+        source: "counties",
+        "source-layer": "counties",
+        paint: { "fill-color": "#00897b", "fill-opacity": 0.5 }
+      }]
+    }
+  });
+</script>
+```

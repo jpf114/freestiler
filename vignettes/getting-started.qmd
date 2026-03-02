@@ -1,0 +1,200 @@
+---
+title: "Getting Started with freestiler"
+vignette: >
+  %\VignetteIndexEntry{Getting Started with freestiler}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r}
+#| include: false
+#| eval: false
+library(freestiler)
+```
+
+## Overview
+
+freestiler is a Rust-powered vector tile engine for R. It takes sf data frames
+and produces [PMTiles](https://github.com/protomaps/PMTiles) archives --- self-contained, single-file
+tilesets that can be served statically or viewed locally. The entire pipeline
+runs in-memory with zero external dependencies: no tippecanoe, no Java, no Go.
+
+freestiler supports two tile formats:
+
+- **MLT (MapLibre Tiles)** --- the default. A next-generation columnar binary
+  format for efficient vector tile encoding.
+- **MVT (Mapbox Vector Tiles)** --- the widely supported protobuf-based format.
+
+## Installation
+
+Install from [r-universe](https://walkerke.r-universe.dev):
+
+```r
+install.packages("freestiler", repos = "https://walkerke.r-universe.dev")
+```
+
+Or install the development version from GitHub:
+
+```r
+# install.packages("devtools")
+devtools::install_github("walkerke/freestiler")
+```
+
+## Creating your first tileset
+
+The main function is `freestile()`. Pass it an sf data frame and an output path:
+
+```{r}
+#| eval: false
+library(sf)
+library(freestiler)
+
+nc <- st_read(system.file("shape/nc.shp", package = "sf"))
+
+freestile(nc, "nc_counties.pmtiles", layer_name = "counties")
+```
+
+```
+Creating MLT tiles (zoom 0-14) for 100 features across 1 layer...
+  Tiling layer 'counties' (zoom 0-14)...
+Created nc_counties.pmtiles (65.2 KB)
+```
+
+This creates a PMTiles archive with MLT-encoded tiles at zoom levels 0 through 14.
+
+## Viewing tiles with mapgl
+
+Use the [mapgl](https://walker-data.com/mapgl/) package to view your tileset
+directly in R:
+
+```{r}
+#| eval: false
+library(mapgl)
+
+maplibre() |>
+  add_vector_source(
+    id = "counties",
+    url = paste0("pmtiles://", normalizePath("nc_counties.pmtiles"))
+  ) |>
+  add_fill_layer(
+    id = "county-fill",
+    source = "counties",
+    source_layer = "counties",
+    fill_color = "#00897b",
+    fill_opacity = 0.5
+  ) |>
+  add_line_layer(
+    id = "county-borders",
+    source = "counties",
+    source_layer = "counties",
+    line_color = "#004d40",
+    line_width = 1
+  )
+```
+
+## MLT vs MVT format
+
+The default format is MLT (MapLibre Tiles). To use MVT instead:
+```{r}
+#| eval: false
+freestile(nc, "nc_mvt.pmtiles", layer_name = "counties", tile_format = "mvt")
+```
+
+MLT is a columnar encoding that can be more compact than MVT, especially for
+polygon-heavy datasets. MVT is the universal fallback supported by all mapping
+libraries. Use MVT when maximum compatibility is needed.
+
+## Controlling zoom levels
+
+The `min_zoom` and `max_zoom` parameters control the zoom range:
+
+```{r}
+#| eval: false
+freestile(nc, "nc_z4_10.pmtiles",
+  layer_name = "counties",
+  min_zoom = 4,
+  max_zoom = 10
+)
+```
+
+## Feature dropping with drop_rate
+
+For large datasets, `drop_rate` provides exponential feature thinning at lower
+zoom levels. Points are thinned using spatial ordering (Morton curve) to
+maintain even coverage; polygons and lines are thinned by area:
+
+```{r}
+#| eval: false
+freestile(nc, "nc_dropping.pmtiles",
+  layer_name = "counties",
+  drop_rate = 2.5
+)
+```
+
+The `base_zoom` parameter controls the zoom level above which all features are
+present. Below `base_zoom`, features are progressively thinned. By default,
+`base_zoom` equals `max_zoom`:
+
+```{r}
+#| eval: false
+freestile(nc, "nc_basezoom.pmtiles",
+  layer_name = "counties",
+  drop_rate = 2.5,
+  base_zoom = 10
+)
+```
+
+## Multi-layer tiles
+
+Pass a named list to create multi-layer tilesets:
+
+```{r}
+#| eval: false
+pts <- st_centroid(nc)
+
+freestile(
+  list(counties = nc, centroids = pts),
+  "nc_layers.pmtiles"
+)
+```
+
+Use `freestile_layer()` for per-layer zoom control:
+
+```{r}
+#| eval: false
+freestile(
+  list(
+    counties = freestile_layer(nc, min_zoom = 0, max_zoom = 10),
+    centroids = freestile_layer(pts, min_zoom = 6, max_zoom = 14)
+  ),
+  "nc_layers.pmtiles"
+)
+```
+
+## Point clustering
+
+For point layers, `cluster_distance` merges nearby points into clusters with
+a `point_count` attribute:
+
+```{r}
+#| eval: false
+freestile(pts, "nc_clustered.pmtiles",
+  layer_name = "centroids",
+  cluster_distance = 50,
+  cluster_maxzoom = 8
+)
+```
+
+## Feature coalescing
+
+The `coalesce` parameter merges features with identical attributes within each
+tile. Lines sharing endpoints are joined; polygons are grouped into
+MultiPolygons:
+
+```{r}
+#| eval: false
+freestile(nc, "nc_coalesced.pmtiles",
+  layer_name = "counties",
+  coalesce = TRUE
+)
+```

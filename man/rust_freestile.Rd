@@ -10,6 +10,7 @@ rust_freestile(
   tile_format,
   global_min_zoom,
   global_max_zoom,
+  base_zoom,
   do_simplify,
   generate_ids,
   quiet,

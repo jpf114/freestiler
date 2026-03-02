@@ -11,6 +11,7 @@ freestile(
   tile_format = "mlt",
   min_zoom = 0L,
   max_zoom = 14L,
+  base_zoom = NULL,
   drop_rate = NULL,
   cluster_distance = NULL,
   cluster_maxzoom = NULL,
@@ -37,11 +38,17 @@ MapLibre Tiles or \code{"mvt"} for Mapbox Vector Tiles.}
 
 \item{max_zoom}{Integer. Maximum zoom level (default 14).}
 
+\item{base_zoom}{Integer. Zoom level at and above which all features are
+present (no dropping). NULL (default) uses each layer's own max_zoom.
+The drop-rate curve is also computed relative to base_zoom, so lowering
+it produces gentler thinning at low zooms. Inspired by tippecanoe's
+\code{-B} / \code{--base-zoom}.}
+
 \item{drop_rate}{Numeric. Exponential drop rate for feature thinning (e.g.
-2.5). At each zoom level below max_zoom, features are retained at a rate of
-1/drop_rate^(max_zoom - zoom). Points are thinned using spatial ordering;
-polygons/lines are thinned by area. NULL (default) uses only sub-pixel
-filtering.}
+2.5). At each zoom level below base_zoom, features are retained at a rate
+of 1/drop_rate^(base_zoom - zoom). Points are thinned using spatial
+ordering; polygons/lines are thinned by area. NULL (default) disables
+drop-rate thinning.}
 
 \item{cluster_distance}{Numeric. Pixel distance for point clustering. Points
 within this radius are merged into cluster features with a \code{point_count}
