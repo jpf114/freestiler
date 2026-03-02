@@ -4,6 +4,7 @@
 ^LICENSE\.md$
 ^src/\.cargo$
 ^src/rust/target$
+^src/rust/freestiler-core/target$
 ^src/rust/vendor$
 ^python$
 \.pmtiles$
