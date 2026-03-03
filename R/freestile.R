@@ -344,9 +344,12 @@ freestile <- function(
 #' Create vector tiles from a spatial file
 #'
 #' Reads a GeoParquet, GeoPackage, Shapefile, or other spatial file directly
-#' into the Rust tiling engine, bypassing R's sf layer. Requires freestiler to
-#' be compiled with optional features (`FREESTILER_GEOPARQUET=true` or
-#' `FREESTILER_DUCKDB=true`).
+#' into the tiling engine. The GeoParquet engine requires compilation with
+#' `FREESTILER_GEOPARQUET=true`. The DuckDB engine uses the Rust DuckDB backend
+#' if compiled (`FREESTILER_DUCKDB=true`), or falls back to the R `duckdb`
+#' package (which reads the file via DuckDB's `ST_Read()`, auto-detects the
+#' source CRS via `ST_Read_Meta()`, and reprojects to WGS84). Control backend
+#' selection with `options(freestiler.duckdb_backend = "auto"|"rust"|"r")`.
 #'
 #' @param input Character. Path to the input spatial file.
 #' @param output Character. Path for the output .pmtiles file.
@@ -414,20 +417,82 @@ freestile_file <- function(
     layer_name <- tools::file_path_sans_ext(basename(output))
   }
 
+  if (engine == "duckdb") {
+    backend <- .choose_duckdb_backend()
+
+    if (!quiet) {
+      backend_label <- if (backend == "rust") "Rust DuckDB" else "R duckdb package"
+      message(sprintf(
+        "Reading %s via %s, creating %s tiles (zoom %d-%d)...",
+        basename(input), backend_label, toupper(tile_format), min_zoom, max_zoom
+      ))
+    }
+
+    if (backend == "r") {
+      # Detect source CRS from file metadata
+      source_crs <- .duckdb_detect_file_crs(input)
+      if (is.null(source_crs) || !nzchar(source_crs)) {
+        stop(
+          "Could not detect CRS from file metadata via DuckDB ST_Read_Meta(). ",
+          "Use a file with embedded CRS metadata, supply the data through ",
+          "`freestile()` as an sf object, or use the Rust DuckDB backend.",
+          call. = FALSE
+        )
+      }
+
+      sql <- sprintf("SELECT * FROM ST_Read('%s')", gsub("'", "''", input))
+      sf_result <- .r_duckdb_query_to_sf(sql, db_path = NULL,
+        source_crs = source_crs)
+      return(freestile(
+        sf_result, output,
+        layer_name = layer_name, tile_format = tile_format,
+        min_zoom = min_zoom, max_zoom = max_zoom,
+        base_zoom = base_zoom, drop_rate = drop_rate,
+        cluster_distance = cluster_distance,
+        cluster_maxzoom = cluster_maxzoom,
+        coalesce = coalesce, simplification = simplification,
+        overwrite = FALSE, quiet = quiet
+      ))
+    }
+
+    # Rust DuckDB path
+    result <- rust_freestile_duckdb(
+      input_path = input,
+      output_path = output,
+      layer_name = layer_name,
+      tile_format = tile_format,
+      min_zoom = as.integer(min_zoom),
+      max_zoom = as.integer(max_zoom),
+      base_zoom = if (is.null(base_zoom)) -1L else as.integer(base_zoom),
+      do_simplify = simplification,
+      drop_rate = if (is.null(drop_rate)) -1.0 else as.double(drop_rate),
+      cluster_distance = if (is.null(cluster_distance)) -1.0 else as.double(cluster_distance),
+      cluster_maxzoom = if (is.null(cluster_maxzoom)) -1L else as.integer(cluster_maxzoom),
+      do_coalesce = coalesce,
+      quiet = quiet
+    )
+
+    if (startsWith(result, "Error:")) {
+      stop(result, call. = FALSE)
+    }
+
+    if (!quiet) {
+      size <- file.info(output)$size
+      message(sprintf("Created %s (%s)", output, .format_size(size)))
+    }
+
+    return(invisible(output))
+  }
+
+  # GeoParquet engine (Rust-only)
   if (!quiet) {
     message(sprintf(
-      "Reading %s via %s engine, creating %s tiles (zoom %d-%d)...",
-      basename(input), engine, toupper(tile_format), min_zoom, max_zoom
+      "Reading %s via geoparquet engine, creating %s tiles (zoom %d-%d)...",
+      basename(input), toupper(tile_format), min_zoom, max_zoom
     ))
   }
 
-  rust_fn <- if (engine == "geoparquet") {
-    rust_freestile_file
-  } else {
-    rust_freestile_duckdb
-  }
-
-  result <- rust_fn(
+  result <- rust_freestile_file(
     input_path = input,
     output_path = output,
     layer_name = layer_name,
@@ -458,15 +523,27 @@ freestile_file <- function(
 #' Create vector tiles from a DuckDB SQL query
 #'
 #' Executes a SQL query via DuckDB's spatial extension and pipes the results
-#' directly into the Rust tiling engine. Data never touches R memory, making
-#' this ideal for large datasets. Requires freestiler to be compiled with
-#' `FREESTILER_DUCKDB=true`.
+#' into the tiling engine. Uses the Rust DuckDB backend if compiled
+#' (`FREESTILER_DUCKDB=true`), or falls back to the R `duckdb` package.
+#' Control backend selection with
+#' `options(freestiler.duckdb_backend = "auto"|"rust"|"r")`.
+#'
+#' When using the R fallback, `source_crs` must be supplied explicitly so the
+#' query result can be interpreted or reprojected correctly. Pass
+#' `"EPSG:4326"` if the SQL already returns WGS84 geometry, or the source CRS
+#' string (for example `"EPSG:4267"`) to have DuckDB reproject to WGS84 before
+#' tiling. For file-based input where the CRS is embedded in the file, use
+#' [freestile_file()] with `engine = "duckdb"` instead, which auto-detects the
+#' source CRS.
 #'
 #' @param query Character. A SQL query that returns a geometry column. DuckDB
 #'   spatial functions like `ST_Read()` and `read_parquet()` are available.
 #' @param output Character. Path for the output .pmtiles file.
 #' @param db_path Character. Path to a DuckDB database file, or NULL (default)
 #'   for an in-memory database.
+#' @param source_crs Character or NULL. CRS of the geometry returned by
+#'   `query`, for example `"EPSG:4326"` or `"EPSG:4267"`. Used only by the R
+#'   `duckdb` fallback; ignored by the Rust DuckDB backend.
 #' @param layer_name Character. Name for the tile layer. If NULL, derived from
 #'   the output filename.
 #' @param tile_format Character. `"mlt"` (default) or `"mvt"`.
@@ -524,7 +601,8 @@ freestile_query <- function(
     coalesce = FALSE,
     simplification = TRUE,
     overwrite = TRUE,
-    quiet = FALSE
+    quiet = FALSE,
+    source_crs = NULL
 ) {
   tile_format <- match.arg(tile_format, c("mlt", "mvt"))
 
@@ -543,13 +621,35 @@ freestile_query <- function(
     layer_name <- tools::file_path_sans_ext(basename(output))
   }
 
+  backend <- .choose_duckdb_backend()
+
   if (!quiet) {
+    backend_label <- if (backend == "rust") "Rust DuckDB" else "R duckdb package"
     message(sprintf(
-      "Executing query via DuckDB, creating %s tiles (zoom %d-%d)...",
-      toupper(tile_format), min_zoom, max_zoom
+      "Executing query via %s, creating %s tiles (zoom %d-%d)...",
+      backend_label, toupper(tile_format), min_zoom, max_zoom
     ))
   }
 
+  if (backend == "r") {
+    sf_result <- .r_duckdb_query_to_sf(
+      query,
+      db_path = db_path,
+      source_crs = source_crs
+    )
+    return(freestile(
+      sf_result, output,
+      layer_name = layer_name, tile_format = tile_format,
+      min_zoom = min_zoom, max_zoom = max_zoom,
+      base_zoom = base_zoom, drop_rate = drop_rate,
+      cluster_distance = cluster_distance,
+      cluster_maxzoom = cluster_maxzoom,
+      coalesce = coalesce, simplification = simplification,
+      overwrite = FALSE, quiet = quiet
+    ))
+  }
+
+  # Rust DuckDB path
   result <- rust_freestile_duckdb_query(
     sql = query,
     db_path = if (is.null(db_path)) "" else db_path,
@@ -577,6 +677,176 @@ freestile_query <- function(
   }
 
   invisible(output)
+}
+
+# Package-level cache for backend detection
+.pkg_cache <- new.env(parent = emptyenv())
+
+#' Check if Rust DuckDB feature is compiled (cached per session)
+#' @noRd
+.has_rust_duckdb <- function() {
+  if (!is.null(.pkg_cache$rust_duckdb)) return(.pkg_cache$rust_duckdb)
+  result <- rust_freestile_duckdb_query("", "", "", "", "mvt", 0L, 6L, -1L,
+    TRUE, -1.0, -1.0, -1L, FALSE, TRUE)
+  val <- !startsWith(result, "Error: DuckDB support not compiled")
+  .pkg_cache$rust_duckdb <- val
+  val
+}
+
+#' Check if R duckdb package is available
+#' @noRd
+.has_r_duckdb <- function() {
+  requireNamespace("duckdb", quietly = TRUE) &&
+    requireNamespace("DBI", quietly = TRUE)
+}
+
+#' Choose DuckDB backend based on option and availability
+#' @noRd
+.choose_duckdb_backend <- function() {
+  backend <- getOption("freestiler.duckdb_backend", "auto")
+  backend <- match.arg(backend, c("auto", "rust", "r"))
+
+  if (backend == "rust") {
+    if (!.has_rust_duckdb()) {
+      stop(
+        "Rust DuckDB backend requested but not compiled. ",
+        "Rebuild with FREESTILER_DUCKDB=true, or set ",
+        "options(freestiler.duckdb_backend = \"auto\") to use the R fallback.",
+        call. = FALSE
+      )
+    }
+    return("rust")
+  }
+
+  if (backend == "r") {
+    if (!.has_r_duckdb()) {
+      stop(
+        "R duckdb backend requested but not installed. ",
+        "Install with install.packages(c(\"duckdb\", \"DBI\")).",
+        call. = FALSE
+      )
+    }
+    return("r")
+  }
+
+  # auto: prefer Rust, fall back to R
+  if (.has_rust_duckdb()) return("rust")
+  if (.has_r_duckdb()) return("r")
+
+  stop(
+    "No DuckDB backend available. Either:\n",
+    "  - Rebuild freestiler with FREESTILER_DUCKDB=true, or\n",
+    "  - Install the R duckdb package: install.packages(c(\"duckdb\", \"DBI\"))",
+    call. = FALSE
+  )
+}
+
+#' Execute a DuckDB SQL query and return an sf object via the R duckdb package
+#'
+#' Detects the geometry column and converts to WKB. If \code{source_crs} is
+#' provided and is not EPSG:4326, reprojects via \code{ST_Transform} inside
+#' DuckDB. If \code{source_crs} is NULL, an error is raised because the R
+#' fallback requires an explicit CRS contract.
+#'
+#' @param sql Character. SQL query returning a geometry column.
+#' @param db_path Character or NULL. Path to DuckDB database file, or NULL for
+#'   in-memory.
+#' @param source_crs Character or NULL. Source CRS string (e.g. "EPSG:4267").
+#'   If provided, geometry is reprojected to EPSG:4326 via ST_Transform. If
+#'   NULL, the R fallback errors and asks the caller to provide it.
+#' @return An sf data frame with crs = 4326.
+#' @noRd
+.r_duckdb_query_to_sf <- function(sql, db_path = NULL, source_crs = NULL) {
+  if (is.null(db_path) || db_path == "") {
+    con <- DBI::dbConnect(duckdb::duckdb())
+  } else {
+    con <- DBI::dbConnect(duckdb::duckdb(), dbdir = db_path)
+  }
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
+
+  DBI::dbExecute(con, "INSTALL spatial; LOAD spatial;")
+
+  if (is.null(source_crs) || !nzchar(source_crs)) {
+    stop(
+      "The R DuckDB fallback requires an explicit `source_crs`. ",
+      "Pass the CRS of the query result (for example `source_crs = \"EPSG:4326\"` ",
+      "or `source_crs = \"EPSG:4267\"`), or use the Rust DuckDB backend.",
+      call. = FALSE
+    )
+  }
+
+  # Discover schema
+  desc <- DBI::dbGetQuery(con, paste0("DESCRIBE (", sql, ")"))
+
+  # Find geometry column: first GEOMETRY type
+  geom_idx <- grep("^GEOMETRY", desc$column_type, ignore.case = TRUE)
+  if (length(geom_idx) == 0L) {
+    stop(
+      "No geometry column found in query result. ",
+      "DuckDB DESCRIBE returned types: ",
+      paste(desc$column_type, collapse = ", "),
+      call. = FALSE
+    )
+  }
+  geom_col <- desc$column_name[geom_idx[1L]]
+
+  # Build WKB query with reprojection when source CRS is known and not 4326
+  needs_transform <- !is.null(source_crs) && source_crs != "EPSG:4326"
+
+  if (needs_transform) {
+    wrapped_sql <- sprintf(
+      "SELECT * EXCLUDE (\"%s\"), ST_AsWKB(ST_Transform(\"%s\", '%s', 'EPSG:4326')) AS __wkb FROM (%s) AS __t",
+      geom_col, geom_col, source_crs, sql
+    )
+  } else {
+    wrapped_sql <- sprintf(
+      "SELECT * EXCLUDE (\"%s\"), ST_AsWKB(\"%s\") AS __wkb FROM (%s) AS __t",
+      geom_col, geom_col, sql
+    )
+  }
+
+  df <- DBI::dbGetQuery(con, wrapped_sql)
+
+  if (nrow(df) == 0L) {
+    stop("Query returned no rows.", call. = FALSE)
+  }
+
+  # Convert WKB to sf with CRS = 4326
+  wkb_col <- df[["__wkb"]]
+  df[["__wkb"]] <- NULL
+  geom <- sf::st_as_sfc(wkb_col, crs = 4326)
+  sf::st_sf(df, geometry = geom)
+}
+
+#' Detect CRS from a spatial file via DuckDB ST_Read_Meta
+#'
+#' Opens a temporary DuckDB connection, loads the spatial extension, and
+#' extracts the CRS authority string from the file's metadata. Returns
+#' NULL on any failure.
+#'
+#' @param file_path Character. Path to the spatial file.
+#' @return Character CRS string (e.g. "EPSG:4267") or NULL.
+#' @noRd
+.duckdb_detect_file_crs <- function(file_path) {
+  tryCatch({
+    con <- DBI::dbConnect(duckdb::duckdb())
+    on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
+    DBI::dbExecute(con, "INSTALL spatial; LOAD spatial;")
+
+    meta <- DBI::dbGetQuery(
+      con,
+      sprintf("SELECT * FROM ST_Read_Meta('%s')", gsub("'", "''", file_path))
+    )
+    crs_df <- meta$layers[[1]]$geometry_fields[[1]]$crs
+    auth_name <- crs_df[["auth_name"]]
+    auth_code <- crs_df[["auth_code"]]
+    if (!is.null(auth_name) && nchar(auth_name) > 0L &&
+        !is.null(auth_code) && nchar(auth_code) > 0L) {
+      paste0(auth_name, ":", auth_code)
+    } else {
+      NULL
+    }
+  }, error = function(e) NULL)
 }
 
 #' Format file size for display

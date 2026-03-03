@@ -21,9 +21,7 @@ rust_freestile(
 )
 }
 \arguments{
-\item{layers}{List of layer lists, each containing: name, geometries, geom_types,
-prop_names, prop_types, prop_char_values, prop_num_values, prop_int_values,
-prop_lgl_values, min_zoom, max_zoom}
+\item{layers}{List of layer lists}
 
 \item{output_path}{Path for output .pmtiles file}
 
@@ -46,6 +44,9 @@ prop_lgl_values, min_zoom, max_zoom}
 \item{cluster_maxzoom}{Max zoom for clustering (negative = use max_zoom - 1)}
 
 \item{do_coalesce}{Whether to coalesce features with same attributes}
+}
+\value{
+The output file path or an error message
 }
 \description{
 Create vector tiles from spatial data (multi-layer support)
