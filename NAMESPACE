@@ -3,7 +3,5 @@
 export(freestile)
 export(freestile_file)
 export(freestile_layer)
-export(rust_freestile)
-export(rust_freestile_duckdb)
-export(rust_freestile_file)
+export(freestile_query)
 useDynLib(freestiler, .registration = TRUE)

@@ -19,6 +19,13 @@ try:
 except ImportError:
     _HAS_FILE_INPUT = False
 
+try:
+    from freestiler._freestiler import _freestile_duckdb_query as _freestile_duckdb_query_rs
+
+    _HAS_DUCKDB = True
+except ImportError:
+    _HAS_DUCKDB = False
+
 
 def freestile(
     input: Union[gpd.GeoDataFrame, dict[str, gpd.GeoDataFrame]],
@@ -391,4 +398,126 @@ def freestile_file(
     return output
 
 
-__all__ = ["freestile", "freestile_file"]
+def freestile_query(
+    query: str,
+    output: Union[str, Path],
+    *,
+    db_path: str | None = None,
+    layer_name: str | None = None,
+    tile_format: str = "mlt",
+    min_zoom: int = 0,
+    max_zoom: int = 14,
+    base_zoom: int | None = None,
+    drop_rate: float | None = None,
+    cluster_distance: float | None = None,
+    cluster_maxzoom: int | None = None,
+    coalesce: bool = False,
+    simplification: bool = True,
+    overwrite: bool = True,
+    quiet: bool = False,
+) -> Path:
+    """Create a PMTiles archive from a DuckDB SQL query.
+
+    Executes a SQL query via DuckDB's spatial extension and pipes the results
+    directly into the Rust tiling engine. Data never touches Python memory,
+    making this ideal for large datasets.
+
+    Parameters
+    ----------
+    query : str
+        A SQL query that returns a geometry column. DuckDB spatial functions
+        like ``ST_Read()`` and ``read_parquet()`` are available.
+    output : str or Path
+        Output path for the .pmtiles file.
+    db_path : str, optional
+        Path to a DuckDB database file. None (default) uses an in-memory
+        database.
+    layer_name : str, optional
+        Name for the tile layer. If None, derived from the output filename.
+    tile_format : str
+        Tile encoding format: "mlt" (default) or "mvt".
+    min_zoom : int
+        Minimum zoom level (default 0).
+    max_zoom : int
+        Maximum zoom level (default 14).
+    base_zoom : int, optional
+        Zoom level at and above which ALL features are kept. None defaults
+        to max_zoom.
+    drop_rate : float, optional
+        Exponential drop rate for feature thinning. None disables.
+    cluster_distance : float, optional
+        Pixel distance for point clustering. None disables.
+    cluster_maxzoom : int, optional
+        Maximum zoom level for clustering. Default is max_zoom - 1.
+    coalesce : bool
+        Whether to merge features with identical attributes (default False).
+    simplification : bool
+        Whether to snap geometries to the tile pixel grid (default True).
+    overwrite : bool
+        Whether to overwrite existing output file (default True).
+    quiet : bool
+        Whether to suppress progress messages (default False).
+
+    Returns
+    -------
+    Path
+        The output file path.
+
+    Raises
+    ------
+    RuntimeError
+        If freestiler was not compiled with DuckDB support.
+    """
+    if tile_format not in ("mlt", "mvt"):
+        raise ValueError(f"tile_format must be 'mlt' or 'mvt', got '{tile_format}'")
+
+    if not _HAS_DUCKDB:
+        raise RuntimeError(
+            "freestiler was not compiled with DuckDB support. "
+            "Rebuild with the 'duckdb' feature enabled."
+        )
+
+    output = Path(output).resolve()
+
+    if output.exists():
+        if overwrite:
+            output.unlink()
+        else:
+            raise FileExistsError(
+                f"Output file already exists: {output}. Set overwrite=True to replace."
+            )
+
+    if layer_name is None:
+        layer_name = output.stem
+
+    if not quiet:
+        print(
+            f"Executing query via DuckDB, "
+            f"creating {tile_format.upper()} tiles (zoom {min_zoom}-{max_zoom})..."
+        )
+
+    _freestile_duckdb_query_rs(
+        sql=query,
+        db_path=db_path,
+        output_path=str(output),
+        layer_name=layer_name,
+        tile_format=tile_format,
+        min_zoom=min_zoom,
+        max_zoom=max_zoom,
+        base_zoom=base_zoom if base_zoom is not None else -1,
+        do_simplify=simplification,
+        quiet=quiet,
+        drop_rate=drop_rate if drop_rate is not None else -1.0,
+        cluster_distance=cluster_distance if cluster_distance is not None else -1.0,
+        cluster_maxzoom=cluster_maxzoom if cluster_maxzoom is not None else -1,
+        do_coalesce=coalesce,
+    )
+
+    if not quiet:
+        size = output.stat().st_size
+        print(f"Created {output} ({_format_size(size)})")
+
+    return output
+
+
+__all__ = ["freestile", "freestile_file", "freestile_query"]

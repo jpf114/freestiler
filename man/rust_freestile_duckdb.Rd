@@ -50,3 +50,4 @@ rust_freestile_duckdb(
 \description{
 Create tiles from a file via DuckDB spatial (requires duckdb feature)
 }
+\keyword{internal}

@@ -783,9 +783,99 @@ fn rust_freestile_duckdb(
     }
 }
 
+/// Create tiles from a DuckDB SQL query (requires duckdb feature)
+/// @param sql SQL query that returns a geometry column
+/// @param db_path Path to DuckDB database (empty string = in-memory)
+/// @param output_path Path for output .pmtiles file
+/// @param layer_name Layer name
+/// @param tile_format "mvt" or "mlt"
+/// @param min_zoom Minimum zoom level
+/// @param max_zoom Maximum zoom level
+/// @param base_zoom Base zoom level (negative = use max_zoom)
+/// @param do_simplify Whether to simplify geometries
+/// @param drop_rate Exponential drop rate (negative = off)
+/// @param cluster_distance Pixel distance for clustering (negative = off)
+/// @param cluster_maxzoom Max zoom for clustering (negative = use max_zoom - 1)
+/// @param do_coalesce Whether to coalesce features
+/// @param quiet Whether to suppress progress
+/// @export
+#[extendr]
+fn rust_freestile_duckdb_query(
+    sql: &str,
+    db_path: &str,
+    output_path: &str,
+    layer_name: &str,
+    tile_format: &str,
+    min_zoom: i32,
+    max_zoom: i32,
+    base_zoom: i32,
+    do_simplify: bool,
+    drop_rate: f64,
+    cluster_distance: f64,
+    cluster_maxzoom: i32,
+    do_coalesce: bool,
+    quiet: bool,
+) -> String {
+    #[cfg(not(feature = "duckdb"))]
+    {
+        let _ = (sql, db_path, output_path, layer_name, tile_format, min_zoom,
+                 max_zoom, base_zoom, do_simplify, drop_rate, cluster_distance,
+                 cluster_maxzoom, do_coalesce, quiet);
+        return "Error: DuckDB support not compiled. Rebuild with FREESTILER_DUCKDB=true.".to_string();
+    }
+
+    #[cfg(feature = "duckdb")]
+    {
+        let reporter: Box<dyn ProgressReporter> = if quiet {
+            Box::new(engine::SilentReporter)
+        } else {
+            Box::new(RReporter)
+        };
+
+        let db_path_opt = if db_path.is_empty() { None } else { Some(db_path) };
+
+        let layers = match freestiler_core::file_input::duckdb_query_to_layers(
+            db_path_opt,
+            sql,
+            layer_name,
+            min_zoom as u8,
+            max_zoom as u8,
+        ) {
+            Ok(l) => l,
+            Err(e) => return format!("Error: {}", e),
+        };
+
+        if !quiet {
+            let total: usize = layers.iter().map(|l| l.features.len()).sum();
+            reporter.report(&format!("  Query returned {} features", total));
+        }
+
+        let config = TileConfig {
+            tile_format: match tile_format {
+                "mlt" => TileFormat::Mlt,
+                _ => TileFormat::Mvt,
+            },
+            min_zoom: min_zoom as u8,
+            max_zoom: max_zoom as u8,
+            base_zoom: if base_zoom < 0 { None } else { Some(base_zoom as u8) },
+            simplification: do_simplify,
+            drop_rate: if drop_rate > 0.0 { Some(drop_rate) } else { None },
+            cluster_distance: if cluster_distance > 0.0 { Some(cluster_distance) } else { None },
+            cluster_maxzoom: if cluster_maxzoom >= 0 { Some(cluster_maxzoom as u8) } else { None },
+            coalesce: do_coalesce,
+        };
+
+        match engine::generate_pmtiles(&layers, output_path, &config, reporter.as_ref()) {
+            Ok(()) => output_path.to_string(),
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+}
+
 extendr_module! {
     mod freestiler;
     fn rust_freestile;
     fn rust_freestile_file;
     fn rust_freestile_duckdb;
+    fn rust_freestile_duckdb_query;
 }

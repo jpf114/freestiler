@@ -455,6 +455,130 @@ freestile_file <- function(
   invisible(output)
 }
 
+#' Create vector tiles from a DuckDB SQL query
+#'
+#' Executes a SQL query via DuckDB's spatial extension and pipes the results
+#' directly into the Rust tiling engine. Data never touches R memory, making
+#' this ideal for large datasets. Requires freestiler to be compiled with
+#' `FREESTILER_DUCKDB=true`.
+#'
+#' @param query Character. A SQL query that returns a geometry column. DuckDB
+#'   spatial functions like `ST_Read()` and `read_parquet()` are available.
+#' @param output Character. Path for the output .pmtiles file.
+#' @param db_path Character. Path to a DuckDB database file, or NULL (default)
+#'   for an in-memory database.
+#' @param layer_name Character. Name for the tile layer. If NULL, derived from
+#'   the output filename.
+#' @param tile_format Character. `"mlt"` (default) or `"mvt"`.
+#' @param min_zoom Integer. Minimum zoom level (default 0).
+#' @param max_zoom Integer. Maximum zoom level (default 14).
+#' @param base_zoom Integer. Zoom level at and above which all features are
+#'   present. NULL (default) uses max_zoom.
+#' @param drop_rate Numeric. Exponential drop rate. NULL (default) disables.
+#' @param cluster_distance Numeric. Pixel distance for clustering. NULL disables.
+#' @param cluster_maxzoom Integer. Max zoom for clustering. Default max_zoom - 1.
+#' @param coalesce Logical. Whether to merge features with identical attributes
+#'   (default FALSE).
+#' @param simplification Logical. Whether to snap geometries to the tile pixel
+#'   grid (default TRUE).
+#' @param overwrite Logical. Whether to overwrite existing output (default TRUE).
+#' @param quiet Logical. Whether to suppress progress (default FALSE).
+#'
+#' @return The output file path (invisibly).
+#'
+#' @examples
+#' \dontrun{
+#' # Query a GeoParquet file
+#' freestile_query(
+#'   "SELECT * FROM read_parquet('data.parquet') WHERE pop > 50000",
+#'   "output.pmtiles"
+#' )
+#'
+#' # Query a Shapefile
+#' freestile_query(
+#'   "SELECT * FROM ST_Read('counties.shp')",
+#'   "counties.pmtiles"
+#' )
+#'
+#' # Query with an existing DuckDB database
+#' freestile_query(
+#'   "SELECT * FROM my_table WHERE region = 'West'",
+#'   "west.pmtiles",
+#'   db_path = "my_database.duckdb"
+#' )
+#' }
+#'
+#' @export
+freestile_query <- function(
+    query,
+    output,
+    db_path = NULL,
+    layer_name = NULL,
+    tile_format = "mlt",
+    min_zoom = 0L,
+    max_zoom = 14L,
+    base_zoom = NULL,
+    drop_rate = NULL,
+    cluster_distance = NULL,
+    cluster_maxzoom = NULL,
+    coalesce = FALSE,
+    simplification = TRUE,
+    overwrite = TRUE,
+    quiet = FALSE
+) {
+  tile_format <- match.arg(tile_format, c("mlt", "mvt"))
+
+  output <- normalizePath(output, mustWork = FALSE)
+
+  if (file.exists(output)) {
+    if (overwrite) {
+      unlink(output)
+    } else {
+      stop("Output file already exists. Set `overwrite = TRUE` to replace it.",
+        call. = FALSE)
+    }
+  }
+
+  if (is.null(layer_name)) {
+    layer_name <- tools::file_path_sans_ext(basename(output))
+  }
+
+  if (!quiet) {
+    message(sprintf(
+      "Executing query via DuckDB, creating %s tiles (zoom %d-%d)...",
+      toupper(tile_format), min_zoom, max_zoom
+    ))
+  }
+
+  result <- rust_freestile_duckdb_query(
+    sql = query,
+    db_path = if (is.null(db_path)) "" else db_path,
+    output_path = output,
+    layer_name = layer_name,
+    tile_format = tile_format,
+    min_zoom = as.integer(min_zoom),
+    max_zoom = as.integer(max_zoom),
+    base_zoom = if (is.null(base_zoom)) -1L else as.integer(base_zoom),
+    do_simplify = simplification,
+    drop_rate = if (is.null(drop_rate)) -1.0 else as.double(drop_rate),
+    cluster_distance = if (is.null(cluster_distance)) -1.0 else as.double(cluster_distance),
+    cluster_maxzoom = if (is.null(cluster_maxzoom)) -1L else as.integer(cluster_maxzoom),
+    do_coalesce = coalesce,
+    quiet = quiet
+  )
+
+  if (startsWith(result, "Error:")) {
+    stop(result, call. = FALSE)
+  }
+
+  if (!quiet) {
+    size <- file.info(output)$size
+    message(sprintf("Created %s (%s)", output, .format_size(size)))
+  }
+
+  invisible(output)
+}
+
 #' Format file size for display
 #' @noRd
 .format_size <- function(size) {

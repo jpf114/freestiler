@@ -53,6 +53,8 @@ mod geoparquet_impl {
         let geom_col_name = find_geometry_column(builder.metadata())
             .unwrap_or_else(|| "geometry".to_string());
 
+        check_crs_is_wgs84(builder.metadata(), &geom_col_name)?;
+
         let reader = builder
             .build()
             .map_err(|e| format!("Cannot build reader: {}", e))?;
@@ -144,6 +146,80 @@ mod geoparquet_impl {
             }
         }
         None
+    }
+
+    /// Check if GeoParquet CRS is WGS84 (EPSG:4326) or unspecified (OGC:CRS84).
+    /// Returns Ok(()) if safe to tile, Err with message if reprojection needed.
+    fn check_crs_is_wgs84(
+        metadata: &parquet::file::metadata::ParquetMetaData,
+        geom_col: &str,
+    ) -> Result<(), String> {
+        let kv = match metadata.file_metadata().key_value_metadata() {
+            Some(kv) => kv,
+            None => return Ok(()), // No metadata — assume WGS84
+        };
+
+        for entry in kv {
+            if entry.key == "geo" {
+                if let Some(ref value) = entry.value {
+                    if let Ok(geo_meta) = serde_json::from_str::<serde_json::Value>(value) {
+                        // Look up the column's CRS in "columns" → col_name → "crs"
+                        if let Some(col_meta) =
+                            geo_meta.get("columns").and_then(|c| c.get(geom_col))
+                        {
+                            // No CRS key means OGC:CRS84 (lon/lat) per GeoParquet spec
+                            let crs = match col_meta.get("crs") {
+                                Some(serde_json::Value::Null) => return Ok(()),
+                                None => return Ok(()),
+                                Some(crs_obj) => crs_obj,
+                            };
+
+                            // Check for EPSG:4326 / OGC:CRS84 in the PROJJSON id
+                            if let Some(id) = crs.get("id") {
+                                let authority = id
+                                    .get("authority")
+                                    .and_then(|a| a.as_str())
+                                    .unwrap_or("");
+                                let code = id
+                                    .get("code")
+                                    .and_then(|c| c.as_u64())
+                                    .unwrap_or(0);
+
+                                if (authority == "EPSG" && code == 4326)
+                                    || (authority == "OGC" && code == 84)
+                                {
+                                    return Ok(());
+                                }
+
+                                return Err(format!(
+                                    "GeoParquet file uses CRS {}:{}, but freestiler requires WGS84 (EPSG:4326). \
+                                     Reproject before tiling, or use freestile_query() with DuckDB which auto-reprojects.",
+                                    authority, code
+                                ));
+                            }
+
+                            // Has CRS but no parseable id — check name as fallback
+                            if let Some(name) = crs.get("name").and_then(|n| n.as_str()) {
+                                let name_upper = name.to_uppercase();
+                                if name_upper.contains("WGS 84")
+                                    || name_upper.contains("WGS84")
+                                    || name_upper.contains("CRS84")
+                                {
+                                    return Ok(());
+                                }
+                                return Err(format!(
+                                    "GeoParquet file uses CRS '{}', but freestiler requires WGS84 (EPSG:4326). \
+                                     Reproject before tiling, or use freestile_query() with DuckDB which auto-reprojects.",
+                                    name
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(()) // No geo metadata or no column entry — assume WGS84
     }
 
     fn arrow_type_to_string(dt: &DataType) -> String {
@@ -276,37 +352,92 @@ mod duckdb_impl {
         conn.execute_batch("INSTALL spatial; LOAD spatial;")
             .map_err(|e| format!("Cannot load spatial extension: {}", e))?;
 
-        // Wrap query to export geometry as WKB
-        let wkb_sql = format!(
-            "SELECT *, ST_AsWKB(geom) AS __wkb FROM ({}) AS __t",
-            sql
-        );
+        // Discover column names and geometry column via DESCRIBE
+        let discover_sql = format!("DESCRIBE ({})", sql);
+        let mut discover_stmt = conn
+            .prepare(&discover_sql)
+            .map_err(|e| format!("Cannot describe query: {}", e))?;
 
-        let mut stmt = conn
-            .prepare(&wkb_sql)
-            .map_err(|e| format!("Query error: {}", e))?;
+        let mut all_columns: Vec<(String, String)> = Vec::new();
+        let mut geom_col_name: Option<String> = None;
 
-        let column_count = stmt.column_count();
-        let column_names: Vec<String> = (0..column_count)
-            .map(|i| stmt.column_name(i).map_or("?".to_string(), |v| v.to_string()))
-            .collect();
+        {
+            let rows = discover_stmt
+                .query_map(params![], |row| {
+                    let col_name: String = row.get(0)?;
+                    let col_type: String = row.get(1)?;
+                    Ok((col_name, col_type))
+                })
+                .map_err(|e| format!("Cannot describe query: {}", e))?;
 
-        let wkb_col_idx = column_names
-            .iter()
-            .position(|n| n == "__wkb")
-            .ok_or("No __wkb column in result")?;
+            for row in rows {
+                let (name, dtype) = row.map_err(|e| format!("Cannot read column info: {}", e))?;
+                let dt = dtype.to_uppercase();
+                if geom_col_name.is_none()
+                    && (dt == "GEOMETRY" || dt.starts_with("GEOMETRY"))
+                {
+                    geom_col_name = Some(name.clone());
+                }
+                all_columns.push((name, dtype));
+            }
+        }
 
-        let skip_cols: Vec<&str> = vec!["geom", "geometry", "__wkb"];
+        let geom_col_name = geom_col_name.ok_or_else(|| {
+            "No geometry column found in query result. Ensure your query returns a GEOMETRY column.".to_string()
+        })?;
+
+        // Build column name list for the wrapped query: original columns + __wkb
+        let mut column_names: Vec<String> = all_columns.iter().map(|(n, _)| n.clone()).collect();
+        column_names.push("__wkb".to_string());
+        let wkb_col_idx = column_names.len() - 1;
+
+        let geom_col_lower = geom_col_name.to_lowercase();
+        let skip_cols: Vec<String> = vec![geom_col_lower, "__wkb".into()];
         let mut prop_names: Vec<String> = Vec::new();
         let mut prop_col_indices: Vec<usize> = Vec::new();
 
         for (i, name) in column_names.iter().enumerate() {
-            if skip_cols.contains(&name.to_lowercase().as_str()) {
+            let name_lower = name.to_lowercase();
+            if skip_cols.contains(&name_lower) {
                 continue;
             }
             prop_names.push(name.clone());
             prop_col_indices.push(i);
         }
+
+        // Detect source CRS via ST_SRID on the first non-null geometry
+        let srid_sql = format!(
+            "SELECT ST_SRID(\"{}\") AS __srid FROM ({}) AS __t WHERE \"{}\" IS NOT NULL LIMIT 1",
+            geom_col_name, sql, geom_col_name
+        );
+        let source_srid: Option<String> = conn
+            .query_row(&srid_sql, params![], |row| {
+                row.get::<_, String>(0)
+            })
+            .ok();
+
+        // Build geometry expression: reproject if not already WGS84
+        let geom_expr = match source_srid.as_deref() {
+            // Already WGS84 or unknown — use as-is
+            None | Some("EPSG:4326") | Some("") => {
+                format!("ST_AsWKB(\"{}\")", geom_col_name)
+            }
+            Some(src_crs) => {
+                format!(
+                    "ST_AsWKB(ST_Transform(\"{}\", '{}', 'EPSG:4326'))",
+                    geom_col_name, src_crs
+                )
+            }
+        };
+
+        let wkb_sql = format!(
+            "SELECT *, {} AS __wkb FROM ({}) AS __t",
+            geom_expr, sql
+        );
+
+        let mut stmt = conn
+            .prepare(&wkb_sql)
+            .map_err(|e| format!("Query error: {}", e))?;
 
         let mut features: Vec<Feature> = Vec::new();
         let mut prop_types: Vec<String> = Vec::new();

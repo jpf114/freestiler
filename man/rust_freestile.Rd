@@ -50,3 +50,4 @@ prop_lgl_values, min_zoom, max_zoom}
 \description{
 Create vector tiles from spatial data (multi-layer support)
 }
+\keyword{internal}

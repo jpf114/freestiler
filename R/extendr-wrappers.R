@@ -63,5 +63,23 @@ rust_freestile_file <- function(input_path, output_path, layer_name, tile_format
 #' @keywords internal
 rust_freestile_duckdb <- function(input_path, output_path, layer_name, tile_format, min_zoom, max_zoom, base_zoom, do_simplify, drop_rate, cluster_distance, cluster_maxzoom, do_coalesce, quiet) .Call(wrap__rust_freestile_duckdb, input_path, output_path, layer_name, tile_format, min_zoom, max_zoom, base_zoom, do_simplify, drop_rate, cluster_distance, cluster_maxzoom, do_coalesce, quiet)
 
+#' Create tiles from a DuckDB SQL query (requires duckdb feature)
+#' @param sql SQL query that returns a geometry column
+#' @param db_path Path to DuckDB database (empty string = in-memory)
+#' @param output_path Path for output .pmtiles file
+#' @param layer_name Layer name
+#' @param tile_format "mvt" or "mlt"
+#' @param min_zoom Minimum zoom level
+#' @param max_zoom Maximum zoom level
+#' @param base_zoom Base zoom level (negative = use max_zoom)
+#' @param do_simplify Whether to simplify geometries
+#' @param drop_rate Exponential drop rate (negative = off)
+#' @param cluster_distance Pixel distance for clustering (negative = off)
+#' @param cluster_maxzoom Max zoom for clustering (negative = use max_zoom - 1)
+#' @param do_coalesce Whether to coalesce features
+#' @param quiet Whether to suppress progress
+#' @keywords internal
+rust_freestile_duckdb_query <- function(sql, db_path, output_path, layer_name, tile_format, min_zoom, max_zoom, base_zoom, do_simplify, drop_rate, cluster_distance, cluster_maxzoom, do_coalesce, quiet) .Call(wrap__rust_freestile_duckdb_query, sql, db_path, output_path, layer_name, tile_format, min_zoom, max_zoom, base_zoom, do_simplify, drop_rate, cluster_distance, cluster_maxzoom, do_coalesce, quiet)
+
 
 # nolint end
