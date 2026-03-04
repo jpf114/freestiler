@@ -1,8 +1,10 @@
 use extendr_api::prelude::*;
 use geo_types::{Coord, LineString, MultiLineString, MultiPolygon, Point, Polygon};
-use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
 use std::time::Instant;
+
+use freestiler_core::engine::{self, ProgressReporter, TileConfig};
+use freestiler_core::pmtiles_writer::TileFormat;
+use freestiler_core::tiler::{Feature, Geometry, LayerData, PropertyValue};
 
 // R console flush (Rprintf output is buffered; flush to show progress immediately)
 extern "C" {
@@ -15,18 +17,15 @@ fn flush_console() {
     }
 }
 
-mod clip;
-mod cluster;
-mod coalesce;
-mod drop;
-mod mlt;
-mod mvt;
-mod pmtiles_writer;
-mod simplify;
-mod tiler;
+/// R-specific progress reporter that uses rprintln! and flushes the console
+struct RReporter;
 
-use pmtiles_writer::TileFormat;
-use tiler::{Feature, Geometry, LayerData, PropertyValue, TileCoord};
+impl ProgressReporter for RReporter {
+    fn report(&self, msg: &str) {
+        rprintln!("{}", msg);
+        flush_console();
+    }
+}
 
 /// Create vector tiles from spatial data (multi-layer support)
 ///
@@ -65,378 +64,60 @@ fn rust_freestile(
     let parse_start = Instant::now();
     let layer_data = parse_layers_from_r(&layers, generate_ids);
 
+    let reporter: Box<dyn ProgressReporter> = if quiet {
+        Box::new(engine::SilentReporter)
+    } else {
+        Box::new(RReporter)
+    };
+
     if !quiet {
         let total_features: usize = layer_data.iter().map(|l| l.features.len()).sum();
-        rprintln!(
+        reporter.report(&format!(
             "  Parsed {} features across {} layer{} in {:.1}s",
             total_features,
             layer_data.len(),
             if layer_data.len() != 1 { "s" } else { "" },
             parse_start.elapsed().as_secs_f64()
-        );
-        flush_console();
+        ));
     }
 
     if layer_data.iter().all(|l| l.features.is_empty()) {
         return "Error: No valid features to tile".to_string();
     }
 
-    let format = match tile_format {
-        "mlt" => TileFormat::Mlt,
-        _ => TileFormat::Mvt,
+    let config = TileConfig {
+        tile_format: match tile_format {
+            "mlt" => TileFormat::Mlt,
+            _ => TileFormat::Mvt,
+        },
+        min_zoom: global_min_zoom as u8,
+        max_zoom: global_max_zoom as u8,
+        base_zoom: if base_zoom < 0 {
+            None
+        } else {
+            Some(base_zoom as u8)
+        },
+        simplification: do_simplify,
+        drop_rate: if drop_rate > 0.0 {
+            Some(drop_rate)
+        } else {
+            None
+        },
+        cluster_distance: if cluster_distance > 0.0 {
+            Some(cluster_distance)
+        } else {
+            None
+        },
+        cluster_maxzoom: if cluster_maxzoom >= 0 {
+            Some(cluster_maxzoom as u8)
+        } else {
+            None
+        },
+        coalesce: do_coalesce,
     };
 
-    let min_z = global_min_zoom as u8;
-    let max_z = global_max_zoom as u8;
-
-    // Compute bounds across all layers
-    let bounds = compute_all_bounds(&layer_data);
-
-    // --- Feature dropping setup ---
-    let use_drop = drop_rate > 0.0;
-    let spatial_indices: Vec<Vec<(usize, u64)>> = if use_drop {
-        layer_data
-            .iter()
-            .map(|l| drop::compute_spatial_indices(&l.features))
-            .collect()
-    } else {
-        layer_data.iter().map(|_| Vec::new()).collect()
-    };
-
-    // --- Point clustering setup ---
-    let use_cluster = cluster_distance > 0.0;
-    let cluster_max_z = if cluster_maxzoom >= 0 {
-        cluster_maxzoom as u8
-    } else {
-        max_z.saturating_sub(1)
-    };
-
-    // Determine which layers are all-point (eligible for clustering)
-    let is_point_layer: Vec<bool> = layer_data
-        .iter()
-        .map(|l| {
-            !l.features.is_empty()
-                && l.features.iter().all(|f| {
-                    matches!(
-                        &f.geometry,
-                        Geometry::Point(_) | Geometry::MultiPoint(_)
-                    )
-                })
-        })
-        .collect();
-
-    // Pre-compute clusters per layer
-    let cluster_results: Vec<HashMap<u8, Vec<Feature>>> = if use_cluster {
-        layer_data
-            .iter()
-            .enumerate()
-            .map(|(li, layer)| {
-                if is_point_layer[li] {
-                    let config = cluster::ClusterConfig {
-                        distance: cluster_distance,
-                        max_zoom: cluster_max_z,
-                    };
-                    cluster::cluster_points(
-                        &layer.features,
-                        &config,
-                        min_z,
-                        layer.prop_names.len(),
-                    )
-                } else {
-                    HashMap::new()
-                }
-            })
-            .collect()
-    } else {
-        layer_data.iter().map(|_| HashMap::new()).collect()
-    };
-
-    // Build extended prop_names for clustered layers (adds "point_count")
-    let cluster_prop_names: Vec<Vec<String>> = layer_data
-        .iter()
-        .enumerate()
-        .map(|(li, layer)| {
-            if use_cluster && is_point_layer[li] {
-                let mut names = layer.prop_names.clone();
-                names.push("point_count".to_string());
-                names
-            } else {
-                layer.prop_names.clone()
-            }
-        })
-        .collect();
-
-    // Build layer metadata for PMTiles
-    let layer_metas: Vec<pmtiles_writer::LayerMeta> = layer_data
-        .iter()
-        .enumerate()
-        .map(|(li, l)| pmtiles_writer::LayerMeta {
-            name: l.name.clone(),
-            property_names: cluster_prop_names[li].clone(),
-            min_zoom: l.min_zoom,
-            max_zoom: l.max_zoom,
-        })
-        .collect();
-
-    // --- Main tile generation loop ---
-    let mut all_tiles: Vec<(TileCoord, Vec<u8>)> = Vec::new();
-    let total_start = Instant::now();
-
-    for zoom in min_z..=max_z {
-        let zoom_start = Instant::now();
-        let pixel_deg = 360.0 / ((1u64 << zoom) as f64 * 4096.0);
-
-        // Per-layer: determine features, presimplify, assign to tiles
-        struct ActiveLayer<'a> {
-            layer_idx: usize,
-            features: &'a [Feature],
-            prop_names: &'a [String],
-            tile_map: HashMap<TileCoord, Vec<usize>>,
-            simplified_geoms: Vec<Option<Geometry>>,
-            drop_mask: Option<Vec<bool>>,
-        }
-
-        let mut active_layers: Vec<ActiveLayer> = Vec::new();
-
-        for (li, layer) in layer_data.iter().enumerate() {
-            if zoom < layer.min_zoom || zoom > layer.max_zoom {
-                continue;
-            }
-
-            // Determine features for this layer at this zoom
-            let using_clusters =
-                use_cluster && is_point_layer[li] && zoom <= cluster_max_z;
-            let features: &[Feature] = if using_clusters {
-                cluster_results[li]
-                    .get(&zoom)
-                    .map(|v| v.as_slice())
-                    .unwrap_or(&layer.features)
-            } else {
-                &layer.features
-            };
-
-            let prop_names: &[String] = if using_clusters {
-                &cluster_prop_names[li]
-            } else {
-                &layer.prop_names
-            };
-
-            // VW presimplify lines
-            let vw_tol = simplify::vw_tolerance_for_zoom(zoom);
-            let simplified_geoms: Vec<Option<Geometry>> = features
-                .par_iter()
-                .map(|f| match &f.geometry {
-                    Geometry::LineString(_) | Geometry::MultiLineString(_) if do_simplify => {
-                        Some(simplify::presimplify_line_vw(&f.geometry, vw_tol))
-                    }
-                    _ => None,
-                })
-                .collect();
-
-            // Compute drop mask (not for clustered features, not at or above base_zoom)
-            // base_z defaults to each layer's own max_zoom (not global) for correct
-            // multi-layer behavior — a layer ending at z6 shouldn't drop at z5.
-            // Drop curve is computed relative to base_z, not max_zoom: at zoom 0 with
-            // base_zoom=4, threshold is drop_rate^(4-0), not drop_rate^(max-0).
-            let layer_base_z = if base_zoom < 0 { layer.max_zoom } else { base_zoom as u8 };
-            let drop_mask = if use_drop && !using_clusters && zoom < layer_base_z {
-                Some(drop::compute_drop_mask(
-                    features,
-                    &spatial_indices[li],
-                    zoom,
-                    layer_base_z,
-                    drop_rate,
-                    pixel_deg,
-                ))
-            } else {
-                None
-            };
-
-            // Assign features to tiles
-            let tile_map =
-                tiler::assign_features_to_tiles_with_geoms(features, &simplified_geoms, zoom);
-
-            active_layers.push(ActiveLayer {
-                layer_idx: li,
-                features,
-                prop_names,
-                tile_map,
-                simplified_geoms,
-                drop_mask,
-            });
-        }
-
-        // Collect all tile coords across all active layers
-        let mut all_coords: HashSet<TileCoord> = HashSet::new();
-        for al in &active_layers {
-            for coord in al.tile_map.keys() {
-                all_coords.insert(*coord);
-            }
-        }
-
-        let n_tiles = all_coords.len();
-        if !quiet {
-            rprintln!(
-                "  Zoom {:>2}/{}: {:>6} tiles ...",
-                zoom,
-                max_z,
-                n_tiles
-            );
-            flush_console();
-        }
-
-        // Process tiles in parallel
-        let tile_coords: Vec<TileCoord> = all_coords.into_iter().collect();
-        let zoom_tiles: Vec<(TileCoord, Vec<u8>)> = tile_coords
-            .into_par_iter()
-            .filter_map(|coord| {
-                // For each layer, process features for this tile
-                let mut tile_layer_data: Vec<(&str, &[String], Vec<Feature>)> = Vec::new();
-
-                for al in &active_layers {
-                    let layer = &layer_data[al.layer_idx];
-
-                    if let Some(feature_indices) = al.tile_map.get(&coord) {
-                        let mut tile_feats: Vec<Feature> = feature_indices
-                            .par_iter()
-                            .filter_map(|&idx| {
-                                // Check drop mask
-                                if let Some(ref mask) = al.drop_mask {
-                                    if !mask[idx] {
-                                        return None;
-                                    }
-                                }
-
-                                let feature = &al.features[idx];
-                                let geom_to_process = match &al.simplified_geoms[idx] {
-                                    Some(g) => g,
-                                    None => &feature.geometry,
-                                };
-
-                                // Clip to tile boundaries
-                                let clipped =
-                                    clip::clip_geometry_to_tile(geom_to_process, &coord)?;
-
-                                // Snap to tile pixel grid
-                                let geometry = if do_simplify {
-                                    simplify::simplify_geometry(&clipped, &coord)
-                                } else {
-                                    clipped
-                                };
-
-                                Some(Feature {
-                                    id: feature.id,
-                                    geometry,
-                                    properties: feature.properties.clone(),
-                                })
-                            })
-                            .collect();
-
-                        // Sort features spatially (Morton curve) for better compression
-                        if tile_feats.len() > 1 {
-                            let tb = tiler::tile_bounds(&coord);
-                            let tw = tb.min().x;
-                            let te = tb.max().x;
-                            let ts = tb.min().y;
-                            let tn = tb.max().y;
-                            tile_feats.sort_by(|a, b| {
-                                let key_a = tiler::tile_morton_key(&a.geometry, tw, te, ts, tn);
-                                let key_b = tiler::tile_morton_key(&b.geometry, tw, te, ts, tn);
-                                key_a.cmp(&key_b).then(a.id.cmp(&b.id))
-                            });
-                        }
-
-                        // Coalesce features within this tile/layer
-                        if do_coalesce && !tile_feats.is_empty() {
-                            tile_feats =
-                                coalesce::coalesce_features(tile_feats, al.prop_names);
-                        }
-
-                        if !tile_feats.is_empty() {
-                            tile_layer_data.push((
-                                &layer.name,
-                                al.prop_names,
-                                tile_feats,
-                            ));
-                        }
-                    }
-                }
-
-                if tile_layer_data.is_empty() {
-                    return None;
-                }
-
-                // Build references for the encode functions
-                let layer_refs: Vec<(&str, &[String], &[Feature])> = tile_layer_data
-                    .iter()
-                    .map(|(name, props, feats)| (*name, *props, feats.as_slice()))
-                    .collect();
-
-                let tile_bytes = match format {
-                    TileFormat::Mvt => mvt::encode_tile_multilayer(&coord, &layer_refs),
-                    TileFormat::Mlt => mlt::encode_tile_multilayer(&coord, &layer_refs),
-                };
-
-                if tile_bytes.is_empty() {
-                    return None;
-                }
-
-                Some((coord, tile_bytes))
-            })
-            .collect();
-
-        let n_encoded = zoom_tiles.len();
-        all_tiles.extend(zoom_tiles);
-
-        if !quiet {
-            let elapsed = zoom_start.elapsed().as_secs_f64();
-            rprintln!(
-                "           {:>6} encoded ({:.1}s)",
-                n_encoded,
-                elapsed
-            );
-            flush_console();
-        }
-    }
-
-    if !quiet {
-        rprintln!(
-            "  Total: {} tiles in {:.1}s",
-            all_tiles.len(),
-            total_start.elapsed().as_secs_f64()
-        );
-        flush_console();
-    }
-
-    if all_tiles.is_empty() {
-        return "Error: No tiles generated".to_string();
-    }
-
-    // Write PMTiles archive
-    if !quiet {
-        rprintln!("  Writing PMTiles archive ({} tiles) ...", all_tiles.len());
-        flush_console();
-    }
-    let write_start = Instant::now();
-    match pmtiles_writer::write_pmtiles(
-        output_path,
-        all_tiles,
-        format,
-        &layer_metas,
-        min_z,
-        max_z,
-        bounds,
-    ) {
-        Ok(()) => {
-            if !quiet {
-                rprintln!(
-                    "  PMTiles write: {:.1}s",
-                    write_start.elapsed().as_secs_f64()
-                );
-                flush_console();
-            }
-            output_path.to_string()
-        }
+    match engine::generate_pmtiles(&layer_data, output_path, &config, reporter.as_ref()) {
+        Ok(()) => output_path.to_string(),
         Err(e) => format!("Error: {}", e),
     }
 }
@@ -930,54 +611,271 @@ fn parse_multipolygon_sfg(robj: Robj) -> Option<Geometry> {
     }
 }
 
-/// Compute bounding box across all layers
-fn compute_all_bounds(layers: &[LayerData]) -> (f64, f64, f64, f64) {
-    let mut west = f64::MAX;
-    let mut south = f64::MAX;
-    let mut east = f64::MIN;
-    let mut north = f64::MIN;
+// ---------------------------------------------------------------------------
+// Direct file input (optional features)
+// ---------------------------------------------------------------------------
 
-    for layer in layers {
-        for feature in &layer.features {
-            update_bounds(
-                &feature.geometry,
-                &mut west,
-                &mut south,
-                &mut east,
-                &mut north,
-            );
-        }
+/// Create tiles from a GeoParquet file (requires geoparquet feature)
+/// @param input_path Path to the GeoParquet file
+/// @param output_path Path for output .pmtiles file
+/// @param layer_name Layer name
+/// @param tile_format "mvt" or "mlt"
+/// @param min_zoom Minimum zoom level
+/// @param max_zoom Maximum zoom level
+/// @param base_zoom Base zoom level (negative = use max_zoom)
+/// @param do_simplify Whether to simplify geometries
+/// @param drop_rate Exponential drop rate (negative = off)
+/// @param cluster_distance Pixel distance for clustering (negative = off)
+/// @param cluster_maxzoom Max zoom for clustering (negative = use max_zoom - 1)
+/// @param do_coalesce Whether to coalesce features
+/// @param quiet Whether to suppress progress
+/// @export
+#[extendr]
+fn rust_freestile_file(
+    input_path: &str,
+    output_path: &str,
+    layer_name: &str,
+    tile_format: &str,
+    min_zoom: i32,
+    max_zoom: i32,
+    base_zoom: i32,
+    do_simplify: bool,
+    drop_rate: f64,
+    cluster_distance: f64,
+    cluster_maxzoom: i32,
+    do_coalesce: bool,
+    quiet: bool,
+) -> String {
+    #[cfg(not(feature = "geoparquet"))]
+    {
+        let _ = (input_path, output_path, layer_name, tile_format, min_zoom,
+                 max_zoom, base_zoom, do_simplify, drop_rate, cluster_distance,
+                 cluster_maxzoom, do_coalesce, quiet);
+        return "Error: GeoParquet support not compiled. Rebuild with FREESTILER_GEOPARQUET=true.".to_string();
     }
 
-    (west, south, east, north)
+    #[cfg(feature = "geoparquet")]
+    {
+        let reporter: Box<dyn ProgressReporter> = if quiet {
+            Box::new(engine::SilentReporter)
+        } else {
+            Box::new(RReporter)
+        };
+
+        let layers = match freestiler_core::file_input::parquet_to_layers(
+            input_path,
+            layer_name,
+            min_zoom as u8,
+            max_zoom as u8,
+        ) {
+            Ok(l) => l,
+            Err(e) => return format!("Error: {}", e),
+        };
+
+        if !quiet {
+            let total: usize = layers.iter().map(|l| l.features.len()).sum();
+            reporter.report(&format!("  Read {} features from {}", total, input_path));
+        }
+
+        let config = TileConfig {
+            tile_format: match tile_format {
+                "mlt" => TileFormat::Mlt,
+                _ => TileFormat::Mvt,
+            },
+            min_zoom: min_zoom as u8,
+            max_zoom: max_zoom as u8,
+            base_zoom: if base_zoom < 0 { None } else { Some(base_zoom as u8) },
+            simplification: do_simplify,
+            drop_rate: if drop_rate > 0.0 { Some(drop_rate) } else { None },
+            cluster_distance: if cluster_distance > 0.0 { Some(cluster_distance) } else { None },
+            cluster_maxzoom: if cluster_maxzoom >= 0 { Some(cluster_maxzoom as u8) } else { None },
+            coalesce: do_coalesce,
+        };
+
+        match engine::generate_pmtiles(&layers, output_path, &config, reporter.as_ref()) {
+            Ok(()) => output_path.to_string(),
+            Err(e) => format!("Error: {}", e),
+        }
+    }
 }
 
-fn update_bounds(
-    geom: &Geometry,
-    west: &mut f64,
-    south: &mut f64,
-    east: &mut f64,
-    north: &mut f64,
-) {
-    use geo::BoundingRect;
-    let bbox = match geom {
-        Geometry::Point(p) => Some(geo_types::Rect::new(p.0, p.0)),
-        Geometry::MultiPoint(mp) => mp.bounding_rect(),
-        Geometry::LineString(ls) => ls.bounding_rect(),
-        Geometry::MultiLineString(mls) => mls.bounding_rect(),
-        Geometry::Polygon(p) => p.bounding_rect(),
-        Geometry::MultiPolygon(mp) => mp.bounding_rect(),
-    };
+/// Create tiles from a file via DuckDB spatial (requires duckdb feature)
+/// @param input_path Path to the spatial file
+/// @param output_path Path for output .pmtiles file
+/// @param layer_name Layer name
+/// @param tile_format "mvt" or "mlt"
+/// @param min_zoom Minimum zoom level
+/// @param max_zoom Maximum zoom level
+/// @param base_zoom Base zoom level (negative = use max_zoom)
+/// @param do_simplify Whether to simplify geometries
+/// @param drop_rate Exponential drop rate (negative = off)
+/// @param cluster_distance Pixel distance for clustering (negative = off)
+/// @param cluster_maxzoom Max zoom for clustering (negative = use max_zoom - 1)
+/// @param do_coalesce Whether to coalesce features
+/// @param quiet Whether to suppress progress
+/// @export
+#[extendr]
+fn rust_freestile_duckdb(
+    input_path: &str,
+    output_path: &str,
+    layer_name: &str,
+    tile_format: &str,
+    min_zoom: i32,
+    max_zoom: i32,
+    base_zoom: i32,
+    do_simplify: bool,
+    drop_rate: f64,
+    cluster_distance: f64,
+    cluster_maxzoom: i32,
+    do_coalesce: bool,
+    quiet: bool,
+) -> String {
+    #[cfg(not(feature = "duckdb"))]
+    {
+        let _ = (input_path, output_path, layer_name, tile_format, min_zoom,
+                 max_zoom, base_zoom, do_simplify, drop_rate, cluster_distance,
+                 cluster_maxzoom, do_coalesce, quiet);
+        return "Error: DuckDB support not compiled. Rebuild with FREESTILER_DUCKDB=true.".to_string();
+    }
 
-    if let Some(bb) = bbox {
-        *west = west.min(bb.min().x);
-        *south = south.min(bb.min().y);
-        *east = east.max(bb.max().x);
-        *north = north.max(bb.max().y);
+    #[cfg(feature = "duckdb")]
+    {
+        let reporter: Box<dyn ProgressReporter> = if quiet {
+            Box::new(engine::SilentReporter)
+        } else {
+            Box::new(RReporter)
+        };
+
+        let layers = match freestiler_core::file_input::duckdb_file_to_layers(
+            input_path,
+            layer_name,
+            min_zoom as u8,
+            max_zoom as u8,
+        ) {
+            Ok(l) => l,
+            Err(e) => return format!("Error: {}", e),
+        };
+
+        if !quiet {
+            let total: usize = layers.iter().map(|l| l.features.len()).sum();
+            reporter.report(&format!("  Read {} features from {}", total, input_path));
+        }
+
+        let config = TileConfig {
+            tile_format: match tile_format {
+                "mlt" => TileFormat::Mlt,
+                _ => TileFormat::Mvt,
+            },
+            min_zoom: min_zoom as u8,
+            max_zoom: max_zoom as u8,
+            base_zoom: if base_zoom < 0 { None } else { Some(base_zoom as u8) },
+            simplification: do_simplify,
+            drop_rate: if drop_rate > 0.0 { Some(drop_rate) } else { None },
+            cluster_distance: if cluster_distance > 0.0 { Some(cluster_distance) } else { None },
+            cluster_maxzoom: if cluster_maxzoom >= 0 { Some(cluster_maxzoom as u8) } else { None },
+            coalesce: do_coalesce,
+        };
+
+        match engine::generate_pmtiles(&layers, output_path, &config, reporter.as_ref()) {
+            Ok(()) => output_path.to_string(),
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+}
+
+/// Create tiles from a DuckDB SQL query (requires duckdb feature)
+/// @param sql SQL query that returns a geometry column
+/// @param db_path Path to DuckDB database (empty string = in-memory)
+/// @param output_path Path for output .pmtiles file
+/// @param layer_name Layer name
+/// @param tile_format "mvt" or "mlt"
+/// @param min_zoom Minimum zoom level
+/// @param max_zoom Maximum zoom level
+/// @param base_zoom Base zoom level (negative = use max_zoom)
+/// @param do_simplify Whether to simplify geometries
+/// @param drop_rate Exponential drop rate (negative = off)
+/// @param cluster_distance Pixel distance for clustering (negative = off)
+/// @param cluster_maxzoom Max zoom for clustering (negative = use max_zoom - 1)
+/// @param do_coalesce Whether to coalesce features
+/// @param quiet Whether to suppress progress
+/// @export
+#[extendr]
+fn rust_freestile_duckdb_query(
+    sql: &str,
+    db_path: &str,
+    output_path: &str,
+    layer_name: &str,
+    tile_format: &str,
+    min_zoom: i32,
+    max_zoom: i32,
+    base_zoom: i32,
+    do_simplify: bool,
+    drop_rate: f64,
+    cluster_distance: f64,
+    cluster_maxzoom: i32,
+    do_coalesce: bool,
+    quiet: bool,
+) -> String {
+    #[cfg(not(feature = "duckdb"))]
+    {
+        let _ = (sql, db_path, output_path, layer_name, tile_format, min_zoom,
+                 max_zoom, base_zoom, do_simplify, drop_rate, cluster_distance,
+                 cluster_maxzoom, do_coalesce, quiet);
+        return "Error: DuckDB support not compiled. Rebuild with FREESTILER_DUCKDB=true.".to_string();
+    }
+
+    #[cfg(feature = "duckdb")]
+    {
+        let reporter: Box<dyn ProgressReporter> = if quiet {
+            Box::new(engine::SilentReporter)
+        } else {
+            Box::new(RReporter)
+        };
+
+        let db_path_opt = if db_path.is_empty() { None } else { Some(db_path) };
+
+        let layers = match freestiler_core::file_input::duckdb_query_to_layers(
+            db_path_opt,
+            sql,
+            layer_name,
+            min_zoom as u8,
+            max_zoom as u8,
+        ) {
+            Ok(l) => l,
+            Err(e) => return format!("Error: {}", e),
+        };
+
+        if !quiet {
+            let total: usize = layers.iter().map(|l| l.features.len()).sum();
+            reporter.report(&format!("  Query returned {} features", total));
+        }
+
+        let config = TileConfig {
+            tile_format: match tile_format {
+                "mlt" => TileFormat::Mlt,
+                _ => TileFormat::Mvt,
+            },
+            min_zoom: min_zoom as u8,
+            max_zoom: max_zoom as u8,
+            base_zoom: if base_zoom < 0 { None } else { Some(base_zoom as u8) },
+            simplification: do_simplify,
+            drop_rate: if drop_rate > 0.0 { Some(drop_rate) } else { None },
+            cluster_distance: if cluster_distance > 0.0 { Some(cluster_distance) } else { None },
+            cluster_maxzoom: if cluster_maxzoom >= 0 { Some(cluster_maxzoom as u8) } else { None },
+            coalesce: do_coalesce,
+        };
+
+        match engine::generate_pmtiles(&layers, output_path, &config, reporter.as_ref()) {
+            Ok(()) => output_path.to_string(),
+            Err(e) => format!("Error: {}", e),
+        }
     }
 }
 
 extendr_module! {
     mod freestiler;
     fn rust_freestile;
+    fn rust_freestile_file;
+    fn rust_freestile_duckdb;
+    fn rust_freestile_duckdb_query;
 }

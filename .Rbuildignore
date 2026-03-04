@@ -3,9 +3,11 @@
 ^\.gitignore$
 ^LICENSE\.md$
 ^src/\.cargo$
+^src/Makevars$
 ^src/rust/target$
+^src/rust/freestiler-core/target$
 ^src/rust/vendor$
-^python$
+^python
 \.pmtiles$
 ^examples$
 ^PYTHON_HANDOFF\.md$
