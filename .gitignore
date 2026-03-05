@@ -12,9 +12,11 @@ src/*.dll
 .Rproj.user
 examples/
 python/target/
+python/dist/
 python/.venv/
 __pycache__/
 *.pyc
+*.whl
 docs/
 .DS_Store
 _CLAUDE.md

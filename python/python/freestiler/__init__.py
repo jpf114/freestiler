@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
 
@@ -20,6 +21,13 @@ except ImportError:
     _HAS_FILE_INPUT = False
 
 try:
+    from freestiler._freestiler import _freestile_duckdb as _freestile_duckdb_rs
+
+    _HAS_DUCKDB_FILE = True
+except ImportError:
+    _HAS_DUCKDB_FILE = False
+
+try:
     from freestiler._freestiler import _freestile_duckdb_query as _freestile_duckdb_query_rs
 
     _HAS_DUCKDB = True
@@ -27,8 +35,51 @@ except ImportError:
     _HAS_DUCKDB = False
 
 
+@dataclass
+class FreestileLayer:
+    """A layer with optional per-layer zoom control.
+
+    Parameters
+    ----------
+    input : GeoDataFrame
+        The geospatial data for this layer.
+    min_zoom : int or None
+        Minimum zoom level for this layer. None uses the global default.
+    max_zoom : int or None
+        Maximum zoom level for this layer. None uses the global default.
+    """
+
+    input: gpd.GeoDataFrame
+    min_zoom: int | None = None
+    max_zoom: int | None = None
+
+
+def freestile_layer(
+    input: gpd.GeoDataFrame,
+    *,
+    min_zoom: int | None = None,
+    max_zoom: int | None = None,
+) -> FreestileLayer:
+    """Create a layer with per-layer zoom control.
+
+    Parameters
+    ----------
+    input : GeoDataFrame
+        The geospatial data for this layer.
+    min_zoom : int, optional
+        Minimum zoom level for this layer. None uses the global default.
+    max_zoom : int, optional
+        Maximum zoom level for this layer. None uses the global default.
+
+    Returns
+    -------
+    FreestileLayer
+    """
+    return FreestileLayer(input=input, min_zoom=min_zoom, max_zoom=max_zoom)
+
+
 def freestile(
-    input: Union[gpd.GeoDataFrame, dict[str, gpd.GeoDataFrame]],
+    input: Union[gpd.GeoDataFrame, dict[str, Union[gpd.GeoDataFrame, FreestileLayer]]],
     output: Union[str, Path],
     *,
     layer_name: str | None = None,
@@ -49,9 +100,10 @@ def freestile(
 
     Parameters
     ----------
-    input : GeoDataFrame or dict[str, GeoDataFrame]
+    input : GeoDataFrame or dict[str, GeoDataFrame | FreestileLayer]
         A single GeoDataFrame for single-layer output, or a dict mapping
-        layer names to GeoDataFrames for multi-layer output.
+        layer names to GeoDataFrames or FreestileLayers for multi-layer output.
+        Use ``freestile_layer()`` to set per-layer zoom ranges.
     output : str or Path
         Output path for the .pmtiles file.
     layer_name : str, optional
@@ -108,16 +160,21 @@ def freestile(
 
     # Normalize to dict of layers
     if isinstance(input, gpd.GeoDataFrame):
-        layers_dict = {layer_name or "default": input}
+        layers_dict: dict[str, Union[gpd.GeoDataFrame, FreestileLayer]] = {
+            layer_name or "default": input
+        }
     elif isinstance(input, dict):
         layers_dict = input
     else:
         raise TypeError(
-            "input must be a GeoDataFrame or dict[str, GeoDataFrame]"
+            "input must be a GeoDataFrame or dict[str, GeoDataFrame | FreestileLayer]"
         )
 
     # Count total features
-    total_features = sum(len(gdf) for gdf in layers_dict.values())
+    total_features = 0
+    for v in layers_dict.values():
+        gdf = v.input if isinstance(v, FreestileLayer) else v
+        total_features += len(gdf)
 
     if not quiet:
         n_layers = len(layers_dict)
@@ -129,8 +186,16 @@ def freestile(
 
     # Preprocess each layer
     rust_layers = []
-    for name, gdf in layers_dict.items():
-        layer_data = _preprocess_layer(gdf, name, min_zoom, max_zoom, quiet)
+    for name, value in layers_dict.items():
+        if isinstance(value, FreestileLayer):
+            gdf = value.input
+            layer_min = value.min_zoom if value.min_zoom is not None else min_zoom
+            layer_max = value.max_zoom if value.max_zoom is not None else max_zoom
+        else:
+            gdf = value
+            layer_min = min_zoom
+            layer_max = max_zoom
+        layer_data = _preprocess_layer(gdf, name, layer_min, layer_max, quiet)
         rust_layers.append(layer_data)
 
     # Call Rust
@@ -279,6 +344,9 @@ def _format_size(size: int) -> str:
         return f"{size} bytes"
 
 
+_GEOPARQUET_EXTENSIONS = {".parquet", ".geoparquet"}
+
+
 def freestile_file(
     input: Union[str, Path],
     output: Union[str, Path],
@@ -295,8 +363,9 @@ def freestile_file(
     simplification: bool = True,
     overwrite: bool = True,
     quiet: bool = False,
+    engine: str = "auto",
 ) -> Path:
-    """Create a PMTiles archive directly from a GeoParquet file.
+    """Create a PMTiles archive directly from a spatial file.
 
     Reads the file in Rust without going through Python/GeoPandas, which is
     faster and uses less memory for large files.
@@ -304,7 +373,7 @@ def freestile_file(
     Parameters
     ----------
     input : str or Path
-        Path to the input GeoParquet file.
+        Path to the input spatial file (GeoParquet, GeoPackage, Shapefile, etc.).
     output : str or Path
         Output path for the .pmtiles file.
     layer_name : str, optional
@@ -332,6 +401,10 @@ def freestile_file(
         Whether to overwrite existing output file (default True).
     quiet : bool
         Whether to suppress progress messages (default False).
+    engine : str
+        Engine to use: "auto" (default) picks geoparquet for .parquet/.geoparquet
+        files and duckdb for everything else. "geoparquet" forces the GeoParquet
+        engine. "duckdb" forces the DuckDB spatial engine.
 
     Returns
     -------
@@ -341,13 +414,10 @@ def freestile_file(
     Raises
     ------
     RuntimeError
-        If freestiler was not compiled with GeoParquet support.
+        If the required feature (geoparquet or duckdb) was not compiled.
     """
-    if not _HAS_FILE_INPUT:
-        raise RuntimeError(
-            "freestiler was not compiled with GeoParquet support. "
-            "Rebuild with the 'geoparquet' feature enabled."
-        )
+    if engine not in ("auto", "geoparquet", "duckdb"):
+        raise ValueError(f"engine must be 'auto', 'geoparquet', or 'duckdb', got '{engine}'")
 
     if tile_format not in ("mlt", "mvt"):
         raise ValueError(f"tile_format must be 'mlt' or 'mvt', got '{tile_format}'")
@@ -369,14 +439,13 @@ def freestile_file(
     if layer_name is None:
         layer_name = output.stem
 
-    if not quiet:
-        print(
-            f"Reading {input_path.name} via GeoParquet engine, "
-            f"creating {tile_format.upper()} tiles (zoom {min_zoom}-{max_zoom})..."
-        )
+    # Resolve engine
+    if engine == "auto":
+        use_duckdb = input_path.suffix.lower() not in _GEOPARQUET_EXTENSIONS
+    else:
+        use_duckdb = engine == "duckdb"
 
-    _freestile_file_rs(
-        input_path=str(input_path),
+    common_kwargs = dict(
         output_path=str(output),
         layer_name=layer_name,
         tile_format=tile_format,
@@ -390,6 +459,31 @@ def freestile_file(
         cluster_maxzoom=cluster_maxzoom if cluster_maxzoom is not None else -1,
         do_coalesce=coalesce,
     )
+
+    if use_duckdb:
+        if not _HAS_DUCKDB_FILE:
+            raise RuntimeError(
+                "freestiler was not compiled with DuckDB support. "
+                "Rebuild with the 'duckdb' feature enabled."
+            )
+        if not quiet:
+            print(
+                f"Reading {input_path.name} via DuckDB engine, "
+                f"creating {tile_format.upper()} tiles (zoom {min_zoom}-{max_zoom})..."
+            )
+        _freestile_duckdb_rs(input_path=str(input_path), **common_kwargs)
+    else:
+        if not _HAS_FILE_INPUT:
+            raise RuntimeError(
+                "freestiler was not compiled with GeoParquet support. "
+                "Rebuild with the 'geoparquet' feature enabled."
+            )
+        if not quiet:
+            print(
+                f"Reading {input_path.name} via GeoParquet engine, "
+                f"creating {tile_format.upper()} tiles (zoom {min_zoom}-{max_zoom})..."
+            )
+        _freestile_file_rs(input_path=str(input_path), **common_kwargs)
 
     if not quiet:
         size = output.stat().st_size
@@ -520,4 +614,10 @@ def freestile_query(
     return output
 
 
-__all__ = ["freestile", "freestile_file", "freestile_query"]
+__all__ = [
+    "freestile",
+    "freestile_file",
+    "freestile_layer",
+    "freestile_query",
+    "FreestileLayer",
+]

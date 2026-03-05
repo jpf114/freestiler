@@ -26,11 +26,22 @@ devtools::install_github("walkerke/freestiler")
 
 ### Python
 
-Install from source (requires Rust toolchain):
+Install from PyPI:
+
+```bash
+pip install freestiler
+```
+
+PyPI wheels ship the base feature set, including GeoPandas input and direct
+GeoParquet file input.
+
+DuckDB-backed file input and SQL query support currently require building from
+source:
 
 ```bash
 cd python
-pip install -e .
+pip install maturin
+python -m maturin develop --release --features duckdb
 ```
 
 See the [Python Setup](https://walker-data.com/freestiler/articles/python.html) article for venv setup and optional features.
@@ -101,12 +112,16 @@ freestile_file("census_blocks.parquet", "blocks.pmtiles")
 freestile_file("counties.gpkg", "counties.pmtiles", engine = "duckdb")
 ```
 
-**Python** -- currently supports GeoParquet; for other formats, use `freestile_query()` with DuckDB:
+**Python** -- GeoParquet works in the published wheels. GeoPackage,
+Shapefile, and other DuckDB-backed formats require a source build with
+DuckDB enabled:
 
 ```python
 from freestiler import freestile_file
 
 freestile_file("census_blocks.parquet", "blocks.pmtiles")
+
+freestile_file("counties.gpkg", "counties.pmtiles", engine="duckdb")
 ```
 
 ## SQL queries with DuckDB
@@ -122,7 +137,7 @@ freestile_query(
 )
 ```
 
-**Python**
+**Python** -- requires a source build with DuckDB enabled:
 
 ```python
 from freestiler import freestile_query
@@ -149,14 +164,19 @@ freestile(
 )
 ```
 
-**Python** -- pass a dict of GeoDataFrames (per-layer zoom control is not yet available in Python):
+**Python**
 
 ```python
+from freestiler import freestile, freestile_layer
+
 centroids = gdf.copy()
 centroids.geometry = gdf.geometry.centroid
 
 freestile(
-    {"counties": gdf, "centroids": centroids},
+    {
+        "counties": freestile_layer(gdf, min_zoom=0, max_zoom=10),
+        "centroids": freestile_layer(centroids, min_zoom=6, max_zoom=14),
+    },
     "nc_layers.pmtiles"
 )
 ```

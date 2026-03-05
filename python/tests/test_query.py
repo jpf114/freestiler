@@ -18,9 +18,14 @@ requires_duckdb = pytest.mark.skipif(
 )
 
 
+def _require_pyarrow() -> None:
+    pytest.importorskip("pyarrow.parquet", reason="pyarrow is required for parquet fixtures")
+
+
 @pytest.fixture
 def parquet_file(tmp_path):
     """Create a small GeoParquet fixture."""
+    _require_pyarrow()
     gdf = gpd.GeoDataFrame(
         {
             "name": ["a", "b", "c"],
@@ -42,6 +47,7 @@ def parquet_file(tmp_path):
 @pytest.fixture
 def point_parquet(tmp_path):
     """Create a small point GeoParquet fixture."""
+    _require_pyarrow()
     gdf = gpd.GeoDataFrame(
         {"label": ["p1", "p2", "p3"], "score": [10.5, 20.3, 30.1]},
         geometry=[Point(-78.6, 35.8), Point(-80.2, 36.1), Point(-82.5, 34.2)],

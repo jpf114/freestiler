@@ -2,6 +2,12 @@
 name = "freestiler-core"
 version = "0.1.0"
 edition = "2021"
+description = "Core Rust engine for building PMTiles vector tilesets"
+license = "MIT"
+homepage = "https://walker-data.com/freestiler/"
+documentation = "https://walker-data.com/freestiler/articles/maplibre-tiles.html"
+repository = "https://github.com/walkerke/freestiler"
+publish = false
 
 [features]
 default = []

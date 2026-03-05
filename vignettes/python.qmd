@@ -52,6 +52,15 @@ pip install -e .
 This builds the Rust extension and installs the package in editable mode.
 GeoPandas and its dependencies are installed automatically.
 
+### Install from PyPI
+
+```bash
+pip install freestiler
+```
+
+Published PyPI wheels ship the base feature set: GeoPandas input, multi-layer
+tiling, feature management, and direct GeoParquet file input.
+
 ### Build with maturin
 
 For development builds with maturin directly:
@@ -63,30 +72,26 @@ python3 -m maturin develop --release
 
 ## Optional features
 
-freestiler supports optional Rust features for direct file input and DuckDB
-queries. These require additional Rust dependencies and are not enabled by
-default.
+GeoParquet support is part of the default Python build.
 
-### GeoParquet support
-
-Read GeoParquet files directly in Rust without going through GeoPandas:
+DuckDB-backed file input and SQL queries are intentionally not included in the
+published PyPI wheels yet. If you need DuckDB support, build from a local
+checkout with the `duckdb` Cargo feature enabled:
 
 ```bash
-FREESTILER_GEOPARQUET=1 pip install -e .
+git clone https://github.com/walkerke/freestiler.git
+cd freestiler/python
+python3 -m venv .venv
+source .venv/bin/activate
+pip install maturin
+python3 -m maturin develop --release --features duckdb
 ```
 
-### DuckDB support
-
-Run SQL queries through DuckDB's spatial extension:
+To build a wheel instead of using an editable install:
 
 ```bash
-FREESTILER_DUCKDB=1 pip install -e .
-```
-
-### Both features
-
-```bash
-FREESTILER_GEOPARQUET=1 FREESTILER_DUCKDB=1 pip install -e .
+python3 -m maturin build --release --features duckdb --out dist
+pip install dist/freestiler-*.whl
 ```
 
 ## Viewing tiles
@@ -204,4 +209,5 @@ The Python API mirrors R closely, with Pythonic conventions:
 | Base zoom | `base_zoom = 10` | `base_zoom=10` |
 | Point clustering | `cluster_distance = 50` | `cluster_distance=50` |
 | Feature coalescing | `coalesce = TRUE` | `coalesce=True` |
-| Layer helper | `freestile_layer()` | (use dict directly) |
+| Layer helper | `freestile_layer()` | `freestile_layer()` |
+| File input engines | `engine = "auto"/"geoparquet"/"duckdb"` | `engine="auto"/"geoparquet"/"duckdb"` |
