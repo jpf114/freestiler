@@ -71,9 +71,12 @@ cfg <- if (is_debug) "debug" else "release"
 )
 
 # Cargo features
-# FSST string compression — always enabled (pure Rust, vendors cleanly)
-features <- c("fsst")
-message("Enabling FSST feature.")
+# Keep advanced encodings opt-in for decoder compatibility.
+features <- character(0)
+if (Sys.getenv("FREESTILER_FSST") != "") {
+  features <- c(features, "fsst")
+  message("Enabling FSST feature.")
+}
 
 # Additional opt-in features (NOT_CRAN only)
 if (is_not_cran) {
