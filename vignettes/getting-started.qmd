@@ -254,10 +254,8 @@ freestile(gdf, "nc_dropping.pmtiles",
 ## Direct file input
 
 Tile spatial files directly without loading them into R or Python first.
-Supports GeoParquet, GeoPackage, Shapefile, and other formats readable by
-DuckDB's spatial extension.
 
-**R**
+**R** -- supports GeoParquet, GeoPackage, Shapefile, and other formats via DuckDB:
 
 ```{r}
 #| eval: false
@@ -268,7 +266,7 @@ freestile_file("census_blocks.parquet", "blocks.pmtiles")
 freestile_file("counties.gpkg", "counties.pmtiles", engine = "duckdb")
 ```
 
-**Python**
+**Python** -- currently supports GeoParquet; for other formats, use `freestile_query()` with DuckDB:
 
 ```python
 from freestiler import freestile_file
@@ -342,7 +340,7 @@ freestile(
 )
 ```
 
-**Python**
+**Python** -- pass a dict of GeoDataFrames (per-layer zoom control is not yet available in Python):
 
 ```python
 centroids = gdf.copy()

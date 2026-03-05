@@ -3,7 +3,7 @@
 <!-- badges: start -->
 <!-- badges: end -->
 
-**freestiler** creates [PMTiles](https://github.com/protomaps/PMTiles) vector tilesets from R and Python. Pass it an sf object, a GeoDataFrame, a file on disk (GeoParquet, GeoPackage, Shapefile), or a DuckDB SQL query and it writes a single `.pmtiles` file you can serve from anywhere. The tiling engine is written in Rust and runs entirely in-process, so there's nothing else to install.
+**freestiler** creates [PMTiles](https://github.com/protomaps/PMTiles) vector tilesets from R and Python. Pass it an sf object or GeoDataFrame, a file on disk, or a DuckDB SQL query and it writes a single `.pmtiles` file you can serve from anywhere. The tiling engine is written in Rust and runs entirely in-process, so there's nothing else to install.
 
 Tile format options are [MapLibre Tiles (MLT)](https://github.com/maplibre/maplibre-tile-spec) and Mapbox Vector Tiles (MVT). Other features include multi-layer tilesets, point clustering, feature coalescing, and exponential drop rates for large datasets.
 
@@ -93,7 +93,7 @@ You can also view any PMTiles file (MLT or MVT) in the browser with [MapLibre GL
 
 You can also tile files on disk without reading them into memory first.
 
-**R**
+**R** -- supports GeoParquet, GeoPackage, Shapefile, and other formats via DuckDB:
 
 ```r
 freestile_file("census_blocks.parquet", "blocks.pmtiles")
@@ -101,7 +101,7 @@ freestile_file("census_blocks.parquet", "blocks.pmtiles")
 freestile_file("counties.gpkg", "counties.pmtiles", engine = "duckdb")
 ```
 
-**Python**
+**Python** -- currently supports GeoParquet; for other formats, use `freestile_query()` with DuckDB:
 
 ```python
 from freestiler import freestile_file
@@ -149,11 +149,9 @@ freestile(
 )
 ```
 
-**Python**
+**Python** -- pass a dict of GeoDataFrames (per-layer zoom control is not yet available in Python):
 
 ```python
-from shapely import Point
-
 centroids = gdf.copy()
 centroids.geometry = gdf.geometry.centroid
 
