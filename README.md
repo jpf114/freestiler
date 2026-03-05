@@ -61,19 +61,19 @@ freestile(gdf, "nc_counties.pmtiles", layer_name="counties")
 
 ## Viewing tiles
 
-**R** -- [mapgl](https://walker-data.com/mapgl/) supports both MLT and MVT:
+**R** -- [mapgl](https://walker-data.com/mapgl/) supports both MLT and MVT. PMTiles need to be served over HTTP, so start a local server first (e.g. `npx serve /tmp -l 8082 --cors` or `cd /tmp && python3 -m http.server 8082`):
 
 ```r
 library(mapgl)
 
 maplibre() |>
-  add_vector_source(
-    id = "counties",
-    url = paste0("pmtiles://", normalizePath("nc_counties.pmtiles"))
+  add_pmtiles_source(
+    id = "counties-src",
+    url = "http://localhost:8082/nc_counties.pmtiles"
   ) |>
   add_fill_layer(
     id = "county-fill",
-    source = "counties",
+    source = "counties-src",
     source_layer = "counties",
     fill_color = "#00897b",
     fill_opacity = 0.5

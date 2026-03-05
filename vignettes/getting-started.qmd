@@ -100,27 +100,36 @@ Created nc_counties.pmtiles (65.2 KB)
 ### R
 
 Use the [mapgl](https://walker-data.com/mapgl/) package to view your tileset
-directly in R. mapgl supports both MLT and MVT tiles:
+in R. mapgl supports both MLT and MVT tiles. PMTiles need to be served over
+HTTP, so start a local file server first:
+
+```bash
+# Serve from /tmp on port 8082 (pick whichever you prefer)
+npx serve /tmp -l 8082 --cors
+# or: cd /tmp && python3 -m http.server 8082
+```
+
+Then point mapgl at the URL:
 
 ```{r}
 #| eval: false
 library(mapgl)
 
 maplibre() |>
-  add_vector_source(
-    id = "counties",
-    url = paste0("pmtiles://", normalizePath("nc_counties.pmtiles"))
+  add_pmtiles_source(
+    id = "counties-src",
+    url = "http://localhost:8082/nc_counties.pmtiles"
   ) |>
   add_fill_layer(
     id = "county-fill",
-    source = "counties",
+    source = "counties-src",
     source_layer = "counties",
     fill_color = "#00897b",
     fill_opacity = 0.5
   ) |>
   add_line_layer(
     id = "county-borders",
-    source = "counties",
+    source = "counties-src",
     source_layer = "counties",
     line_color = "#004d40",
     line_width = 1
