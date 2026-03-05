@@ -72,7 +72,7 @@ freestile(gdf, "nc_counties.pmtiles", layer_name="counties")
 
 ## Viewing tiles
 
-**R** -- [mapgl](https://walker-data.com/mapgl/) supports both MLT and MVT. PMTiles need to be served over HTTP, so start a local server first (e.g. `npx serve /tmp -l 8082 --cors` or `cd /tmp && python3 -m http.server 8082`):
+**R** -- [mapgl](https://walker-data.com/mapgl/) supports both MLT and MVT. PMTiles need HTTP range requests, so start a local server first (e.g. `npx http-server /tmp -p 8082 --cors -c-1`):
 
 ```r
 library(mapgl)

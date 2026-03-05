@@ -100,13 +100,12 @@ Created nc_counties.pmtiles (65.2 KB)
 ### R
 
 Use the [mapgl](https://walker-data.com/mapgl/) package to view your tileset
-in R. mapgl supports both MLT and MVT tiles. PMTiles need to be served over
-HTTP, so start a local file server first:
+in R. mapgl supports both MLT and MVT tiles. PMTiles need HTTP range requests,
+so start a local file server first:
 
 ```bash
 # Serve from /tmp on port 8082 (pick whichever you prefer)
-npx serve /tmp -l 8082 --cors
-# or: cd /tmp && python3 -m http.server 8082
+npx http-server /tmp -p 8082 --cors -c-1
 ```
 
 Then point mapgl at the URL:
