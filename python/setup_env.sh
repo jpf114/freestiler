@@ -1,6 +1,6 @@
 #!/bin/bash
 # Setup the freestiler Python dev environment
-# Usage: cd python && bash setup_env.sh [--duckdb]
+# Usage: cd python && bash setup_env.sh [--no-duckdb]
 #
 # Opens in Positron: set Python interpreter to python/.venv/bin/python
 
@@ -14,12 +14,12 @@ uv venv .venv
 echo "Installing dependencies..."
 uv pip install maturin geopandas shapely pyproj numpy pytest
 
-FEATURES=""
-if [[ "$1" == "--duckdb" ]]; then
-    FEATURES="--features duckdb"
-    echo "Building with DuckDB support (this takes a while first time)..."
+FEATURES="--features duckdb"
+if [[ "$1" == "--no-duckdb" ]]; then
+    FEATURES="--no-default-features --features geoparquet"
+    echo "Building without DuckDB support..."
 else
-    echo "Building (use --duckdb to enable DuckDB support)..."
+    echo "Building with DuckDB support..."
 fi
 
 python3 -m maturin develop $FEATURES

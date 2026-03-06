@@ -1,12 +1,13 @@
 # Python Release Checklist
 
-This package publishes base-feature Python distributions to PyPI.
+This package publishes Python distributions to PyPI with the default native
+feature set.
 
 Current wheel policy:
 
 - Published wheels include the default feature set.
 - GeoParquet support is included.
-- DuckDB support is source-build only and is not published in PyPI wheels.
+- DuckDB support is included.
 
 ## Before releasing
 

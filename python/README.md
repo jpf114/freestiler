@@ -18,11 +18,13 @@ Install from PyPI:
 pip install freestiler
 ```
 
-Published PyPI wheels ship the base feature set:
+Published PyPI wheels ship the native feature set:
 
 - GeoPandas input
 - Multi-layer tiling and feature management
 - Direct GeoParquet file input
+- DuckDB-backed file input
+- DuckDB SQL query support
 
 If a wheel is not available for your platform, `pip` will build from source and
 requires a Rust toolchain.
@@ -38,12 +40,10 @@ gdf = gpd.read_file("counties.shp")
 freestile(gdf, "counties.pmtiles", layer_name="counties")
 ```
 
-## Optional Features
+## Source Builds
 
-GeoParquet file input is enabled in the default build.
-
-DuckDB-backed file input and SQL queries are not included in the published PyPI
-wheels yet. To enable DuckDB support, build from a local checkout:
+Published wheels include GeoParquet and DuckDB support by default. To build
+from a local checkout:
 
 ```bash
 git clone https://github.com/walkerke/freestiler.git
@@ -51,13 +51,13 @@ cd freestiler/python
 python3 -m venv .venv
 source .venv/bin/activate
 pip install maturin
-python3 -m maturin develop --release --features duckdb
+python3 -m maturin develop --release
 ```
 
 To build an installable wheel instead of using an editable install:
 
 ```bash
-python3 -m maturin build --release --features duckdb --out dist
+python3 -m maturin build --release --out dist
 pip install dist/freestiler-*.whl
 ```
 

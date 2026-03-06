@@ -463,8 +463,9 @@ def freestile_file(
     if use_duckdb:
         if not _HAS_DUCKDB_FILE:
             raise RuntimeError(
-                "freestiler was not compiled with DuckDB support. "
-                "Rebuild with the 'duckdb' feature enabled."
+                "freestiler was installed without DuckDB support. "
+                "Install the published wheel or rebuild from source without "
+                "disabling default features."
             )
         if not quiet:
             print(
@@ -574,8 +575,9 @@ def freestile_query(
 
     if not _HAS_DUCKDB:
         raise RuntimeError(
-            "freestiler was not compiled with DuckDB support. "
-            "Rebuild with the 'duckdb' feature enabled."
+            "freestiler was installed without DuckDB support. "
+            "Install the published wheel or rebuild from source without "
+            "disabling default features."
         )
 
     output = Path(output).resolve()

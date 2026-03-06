@@ -50,15 +50,17 @@ devtools::install_github("walkerke/freestiler")
 
 ### Python
 
-Install from source (requires Rust toolchain):
+Install from PyPI:
 
 ```bash
-cd python
-pip install -e .
+pip install freestiler
 ```
 
+Published wheels include the native feature set, including DuckDB-backed file
+input and SQL query support.
+
 See the [Python Setup](python.html) article for detailed installation
-instructions, virtual environment setup, and building with optional features.
+instructions, virtual environment setup, and optional source builds.
 
 ## Creating your first tileset
 
@@ -269,9 +271,8 @@ freestile_file("census_blocks.parquet", "blocks.pmtiles")
 freestile_file("counties.gpkg", "counties.pmtiles", engine = "duckdb")
 ```
 
-**Python** -- GeoParquet works in the published wheels. GeoPackage,
-Shapefile, and other DuckDB-backed formats require a source build with
-DuckDB enabled:
+**Python** -- published wheels include the DuckDB engine, so GeoPackage,
+Shapefile, and other DuckDB-backed formats work out of the box:
 
 ```python
 from freestiler import freestile_file
@@ -304,7 +305,7 @@ freestile_query(
 )
 ```
 
-**Python** -- requires a source build with DuckDB enabled:
+**Python**
 
 ```python
 from freestiler import freestile_query

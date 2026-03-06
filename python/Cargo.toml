@@ -14,7 +14,7 @@ name = "_freestiler"
 crate-type = ["cdylib"]
 
 [features]
-default = ["geoparquet"]
+default = ["geoparquet", "duckdb"]
 geoparquet = ["freestiler-core/geoparquet"]
 duckdb = ["freestiler-core/duckdb"]
 fastpfor = ["freestiler-core/fastpfor"]

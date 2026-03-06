@@ -36,17 +36,8 @@ Install from PyPI:
 pip install freestiler
 ```
 
-PyPI wheels ship the base feature set, including GeoPandas input and direct
-GeoParquet file input.
-
-DuckDB-backed file input and SQL query support currently require building from
-source:
-
-```bash
-cd python
-pip install maturin
-python -m maturin develop --release --features duckdb
-```
+PyPI wheels ship the native feature set, including GeoPandas input, direct
+GeoParquet file input, DuckDB-backed file input, and SQL query support.
 
 See the [Python Setup](https://walker-data.com/freestiler/articles/python.html) article for venv setup and optional features.
 
@@ -116,9 +107,8 @@ freestile_file("census_blocks.parquet", "blocks.pmtiles")
 freestile_file("counties.gpkg", "counties.pmtiles", engine = "duckdb")
 ```
 
-**Python** -- GeoParquet works in the published wheels. GeoPackage,
-Shapefile, and other DuckDB-backed formats require a source build with
-DuckDB enabled:
+**Python** -- published wheels include the DuckDB engine, so GeoPackage,
+Shapefile, and other DuckDB-backed formats work out of the box:
 
 ```python
 from freestiler import freestile_file
@@ -141,7 +131,7 @@ freestile_query(
 )
 ```
 
-**Python** -- requires a source build with DuckDB enabled:
+**Python**
 
 ```python
 from freestiler import freestile_query
