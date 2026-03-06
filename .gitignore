@@ -17,7 +17,6 @@ python/.venv/
 __pycache__/
 *.pyc
 *.whl
-docs/
 .DS_Store
 _CLAUDE.md
 _PYTHON_HANDOFF.md
