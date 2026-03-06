@@ -14,7 +14,7 @@ Tile format options are [MapLibre Tiles (MLT)](https://github.com/maplibre/mapli
 Install from [r-universe](https://walkerke.r-universe.dev):
 
 ```r
-install.packages("freestiler", repos = "https://walkerke.r-universe.dev")
+install.packages('freestiler', repos = c('https://walkerke.r-universe.dev', 'https://cloud.r-project.org'))
 ```
 
 The `r-universe` build is the recommended install for serious DuckDB-backed
