@@ -75,53 +75,132 @@
 
 
 
-    <section class="level2"><h2 id="overview">Overview<a class="anchor" aria-label="anchor" href="#overview"></a>
-</h2>
-<p>freestiler is a Rust-powered vector tile engine for R and Python. It takes sf data frames or GeoDataFrames and produces <a href="https://github.com/protomaps/PMTiles" class="external-link">PMTiles</a> archives – self-contained, single-file tilesets that can be served statically or viewed locally. The whole pipeline runs in-process: no tippecanoe, no Java, no Go.</p>
-<p>freestiler supports two tile formats:</p>
-<ul>
-<li>
-<strong>MLT (MapLibre Tiles)</strong> – the default. A next-generation columnar binary format for efficient vector tile encoding.</li>
-<li>
-<strong>MVT (Mapbox Vector Tiles)</strong> – the widely supported protobuf-based format.</li>
-</ul>
-<p>The package is designed for two very different use cases:</p>
-<ul>
-<li>small reproducible examples, where you want a quick path from spatial data to PMTiles</li>
-<li>serious tiling jobs, where your data already lives in DuckDB and you want to stream directly from SQL</li>
-</ul></section><section class="level2"><h2 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
-</h2>
-<section class="level3"><h3 id="r">R<a class="anchor" aria-label="anchor" href="#r"></a>
+    <p>freestiler is a vector tile engine for R (and Python) that creates <a href="https://github.com/protomaps/PMTiles" class="external-link">PMTiles</a> archives from spatial data. You give it an sf object, a file on disk, or a DuckDB query, and it writes a single <code>.pmtiles</code> file you can serve from anywhere. The engine is written in Rust and runs in-process, so there’s nothing else to install.</p>
+<p>The package supports two tile formats: <a href="https://github.com/maplibre/maplibre-tile-spec" class="external-link">MapLibre Tiles (MLT)</a>, a next-generation columnar format that’s the default, and Mapbox Vector Tiles (MVT), the widely-supported protobuf format. See the <a href="maplibre-tiles.html">MapLibre Tiles</a> article for more on the differences.</p>
+<section class="level3"><h3 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
 </h3>
 <p>Install from <a href="https://walkerke.r-universe.dev" class="external-link">r-universe</a>:</p>
 <div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="st">"freestiler"</span>, repos <span class="op">=</span> <span class="st">"https://walkerke.r-universe.dev"</span><span class="op">)</span></span></code></pre></div>
-<p>The <code>r-universe</code> build is the recommended install for serious DuckDB-backed workloads. Native macOS and Linux builds include the Rust DuckDB backend by default, including the streaming point pipeline used by <code><a href="../reference/freestile_query.html">freestile_query()</a></code>. Windows currently uses the R <code>duckdb</code> fallback by default while the GNU DuckDB toolchain issue is sorted out.</p>
-<p>Or install the development version from GitHub:</p>
-<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># install.packages("devtools")</span></span>
-<span><span class="fu">devtools</span><span class="fu">::</span><span class="fu"><a href="https://remotes.r-lib.org/reference/install_github.html" class="external-link">install_github</a></span><span class="op">(</span><span class="st">"walkerke/freestiler"</span><span class="op">)</span></span></code></pre></div>
-</section><section class="level3"><h3 id="python">Python<a class="anchor" aria-label="anchor" href="#python"></a>
+<code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span></span>
+<span>  <span class="st">"freestiler"</span>,</span>
+<span>  repos <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"https://walkerke.r-universe.dev"</span>, <span class="st">"https://cloud.r-project.org"</span><span class="op">)</span></span>
+<span><span class="op">)</span></span></code></pre></div>
+<p>The r-universe build includes the Rust DuckDB backend on macOS and Linux, which powers the streaming point pipeline in <code><a href="../reference/freestile_query.html">freestile_query()</a></code>. You can also install from GitHub with <code>devtools::install_github("walkerke/freestiler")</code>.</p>
+<p>For Python, see the <a href="python.html">Python Setup</a> article.</p>
+</section><section class="level3"><h3 id="your-first-tileset">Your first tileset<a class="anchor" aria-label="anchor" href="#your-first-tileset"></a>
 </h3>
-<p>Install from PyPI:</p>
-<div class="sourceCode" id="cb3"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install freestiler</span></code></pre></div>
-<p>Published wheels include the native feature set, including DuckDB-backed file input and SQL query support.</p>
-<p>See the <a href="python.html">Python Setup</a> article for detailed installation instructions, virtual environment setup, and optional source builds.</p>
-</section></section><section class="level2"><h2 id="what-makes-freestiler-different">What makes freestiler different<a class="anchor" aria-label="anchor" href="#what-makes-freestiler-different"></a>
-</h2>
-<ul>
-<li>One Rust tiling engine for both R and Python</li>
-<li>PMTiles output by default</li>
-<li>Direct file tiling without loading everything into R or Python first</li>
-<li>DuckDB query tiling</li>
-<li>Streaming point pipeline for large DuckDB queries</li>
-<li>Cross-platform support (Windows, MacOS, Linux)</li>
-</ul></section><section class="level2"><h2 id="a-serious-workload-example">A serious-workload example<a class="anchor" aria-label="anchor" href="#a-serious-workload-example"></a>
-</h2>
-<p>The small examples in this vignette are reproducible and easy to follow. But the same API is built to handle much larger jobs.</p>
-<p>On a recent local run, <code><a href="../reference/freestile_query.html">freestile_query()</a></code> streamed <code>146,575,672</code> US job points from DuckDB into an MVT PMTiles archive in about <code>12 minutes</code>, producing a <code>2.3 GB</code> output with <code>978,589</code> tiles.</p>
+<p>The main function is <code><a href="../reference/freestile.html">freestile()</a></code>. Let’s tile the North Carolina counties dataset that ships with sf:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb2"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://r-spatial.github.io/sf/" class="external-link">sf</a></span><span class="op">)</span></span>
+<span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://walker-data.com/freestiler/">freestiler</a></span><span class="op">)</span></span>
+<span></span>
+<span><span class="va">nc</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_read.html" class="external-link">st_read</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/system.file.html" class="external-link">system.file</a></span><span class="op">(</span><span class="st">"shape/nc.shp"</span>, package <span class="op">=</span> <span class="st">"sf"</span><span class="op">)</span><span class="op">)</span></span>
+<span></span>
+<span><span class="fu"><a href="../reference/freestile.html">freestile</a></span><span class="op">(</span><span class="va">nc</span>, <span class="st">"nc_counties.pmtiles"</span>, layer_name <span class="op">=</span> <span class="st">"counties"</span><span class="op">)</span></span></code></pre></div>
+</div>
+<pre><code>Creating MLT tiles (zoom 0-14) for 100 features across 1 layer...
+  Tiling layer 'counties' (zoom 0-14)...
+Created nc_counties.pmtiles (65.2 KB)</code></pre>
+<p>That’s useful for verifying your installation, but let’s try something more interesting.</p>
+</section><section class="level3"><h3 id="a-more-interesting-example">A more interesting example<a class="anchor" aria-label="anchor" href="#a-more-interesting-example"></a>
+</h3>
+<p>Let’s tile all 242,000 US block groups from the <a href="https://github.com/walkerke/tigris" class="external-link">tigris</a> package. This takes about 20 seconds on my machine and produces a tileset you can zoom into from the national level down to individual neighborhoods:</p>
 <div class="cell">
 <div class="sourceCode cell-code" id="cb4"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://github.com/walkerke/tigris" class="external-link">tigris</a></span><span class="op">)</span></span>
+<span><span class="fu"><a href="https://rdrr.io/r/base/options.html" class="external-link">options</a></span><span class="op">(</span>tigris_use_cache <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
+<span></span>
+<span><span class="va">bgs</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/pkg/tigris/man/block_groups.html" class="external-link">block_groups</a></span><span class="op">(</span>cb <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
+<span></span>
+<span><span class="fu"><a href="../reference/freestile.html">freestile</a></span><span class="op">(</span></span>
+<span>  <span class="va">bgs</span>,</span>
+<span>  <span class="st">"us_bgs.pmtiles"</span>,</span>
+<span>  layer_name <span class="op">=</span> <span class="st">"bgs"</span>,</span>
+<span>  min_zoom <span class="op">=</span> <span class="fl">4</span>,</span>
+<span>  max_zoom <span class="op">=</span> <span class="fl">12</span></span>
+<span><span class="op">)</span></span></code></pre></div>
+</div>
+</section><section class="level3"><h3 id="viewing-tiles-with-mapgl">Viewing tiles with mapgl<a class="anchor" aria-label="anchor" href="#viewing-tiles-with-mapgl"></a>
+</h3>
+<p>To view your tiles, use the <a href="https://walker-data.com/mapgl/" class="external-link">mapgl</a> package. PMTiles need HTTP range requests, so you’ll want to start a local file server first:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="ex">npx</span> http-server /tmp <span class="at">-p</span> 8082 <span class="at">--cors</span> <span class="at">-c-1</span></span></code></pre></div>
+<p>Then point mapgl at the URL:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb6"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://walker-data.com/mapgl/" class="external-link">mapgl</a></span><span class="op">)</span></span>
+<span></span>
+<span><span class="fu"><a href="https://walker-data.com/mapgl/reference/maplibre.html" class="external-link">maplibre</a></span><span class="op">(</span>hash <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="https://walker-data.com/mapgl/reference/add_pmtiles_source.html" class="external-link">add_pmtiles_source</a></span><span class="op">(</span></span>
+<span>    id <span class="op">=</span> <span class="st">"bgs-src"</span>,</span>
+<span>    url <span class="op">=</span> <span class="st">"http://localhost:8082/us_bgs.pmtiles"</span>,</span>
+<span>    promote_id <span class="op">=</span> <span class="st">"GEOID"</span></span>
+<span>  <span class="op">)</span> <span class="op">|&gt;</span></span>
+<span>  <span class="fu"><a href="https://walker-data.com/mapgl/reference/add_fill_layer.html" class="external-link">add_fill_layer</a></span><span class="op">(</span></span>
+<span>    id <span class="op">=</span> <span class="st">"bgs-fill"</span>,</span>
+<span>    source <span class="op">=</span> <span class="st">"bgs-src"</span>,</span>
+<span>    source_layer <span class="op">=</span> <span class="st">"bgs"</span>,</span>
+<span>    fill_color <span class="op">=</span> <span class="st">"navy"</span>,</span>
+<span>    fill_opacity <span class="op">=</span> <span class="fl">0.5</span>,</span>
+<span>    hover_options <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span></span>
+<span>      fill_color <span class="op">=</span> <span class="st">"#ffffcc"</span>,</span>
+<span>      fill_opacity <span class="op">=</span> <span class="fl">0.9</span></span>
+<span>    <span class="op">)</span></span>
+<span>  <span class="op">)</span></span></code></pre></div>
+</div>
+</section><section class="level3"><h3 id="mlt-vs-mvt">MLT vs MVT<a class="anchor" aria-label="anchor" href="#mlt-vs-mvt"></a>
+</h3>
+<p>The default tile format is MLT, which tends to produce smaller files for polygon-heavy data. If you need maximum viewer compatibility - particularly for Python viewers or older MapLibre versions - use MVT:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb7"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu"><a href="../reference/freestile.html">freestile</a></span><span class="op">(</span><span class="va">nc</span>, <span class="st">"nc_mvt.pmtiles"</span>, layer_name <span class="op">=</span> <span class="st">"counties"</span>, tile_format <span class="op">=</span> <span class="st">"mvt"</span><span class="op">)</span></span></code></pre></div>
+</div>
+</section><section class="level3"><h3 id="controlling-zoom-levels">Controlling zoom levels<a class="anchor" aria-label="anchor" href="#controlling-zoom-levels"></a>
+</h3>
+<p>Use <code>min_zoom</code> and <code>max_zoom</code> to set the zoom range for your tileset:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb8"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu"><a href="../reference/freestile.html">freestile</a></span><span class="op">(</span><span class="va">nc</span>, <span class="st">"nc_z4_10.pmtiles"</span>,</span>
+<span>  layer_name <span class="op">=</span> <span class="st">"counties"</span>,</span>
+<span>  min_zoom <span class="op">=</span> <span class="fl">4</span>,</span>
+<span>  max_zoom <span class="op">=</span> <span class="fl">10</span></span>
+<span><span class="op">)</span></span></code></pre></div>
+</div>
+</section><section class="level3"><h3 id="feature-dropping-for-large-datasets">Feature dropping for large datasets<a class="anchor" aria-label="anchor" href="#feature-dropping-for-large-datasets"></a>
+</h3>
+<p>For large datasets, <code>drop_rate</code> provides exponential feature thinning at lower zoom levels. Points are thinned using spatial ordering to maintain even coverage; polygons and lines are thinned by area. The <code>base_zoom</code> parameter controls the zoom level above which all features are kept:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb9"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu"><a href="../reference/freestile.html">freestile</a></span><span class="op">(</span><span class="va">nc</span>, <span class="st">"nc_dropping.pmtiles"</span>,</span>
+<span>  layer_name <span class="op">=</span> <span class="st">"counties"</span>,</span>
+<span>  drop_rate <span class="op">=</span> <span class="fl">2.5</span>,</span>
+<span>  base_zoom <span class="op">=</span> <span class="fl">10</span></span>
+<span><span class="op">)</span></span></code></pre></div>
+</div>
+</section><section class="level3"><h3 id="direct-file-input">Direct file input<a class="anchor" aria-label="anchor" href="#direct-file-input"></a>
+</h3>
+<p>You can tile spatial files on disk without loading them into R first. This is useful for large GeoParquet files or other formats you’d rather not pull into memory:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb10"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="co"># GeoParquet</span></span>
+<span><span class="fu"><a href="../reference/freestile_file.html">freestile_file</a></span><span class="op">(</span><span class="st">"census_blocks.parquet"</span>, <span class="st">"blocks.pmtiles"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># GeoPackage, Shapefile, or other formats via DuckDB</span></span>
+<span><span class="fu"><a href="../reference/freestile_file.html">freestile_file</a></span><span class="op">(</span><span class="st">"counties.gpkg"</span>, <span class="st">"counties.pmtiles"</span>, engine <span class="op">=</span> <span class="st">"duckdb"</span><span class="op">)</span></span></code></pre></div>
+</div>
+</section><section class="level3"><h3 id="duckdb-queries">DuckDB queries<a class="anchor" aria-label="anchor" href="#duckdb-queries"></a>
+</h3>
+<p>If your data already lives in DuckDB, you can run a SQL query and pipe the results directly into the tiling engine. This lets you filter, join, and transform your data with SQL before tiling:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb11"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu"><a href="../reference/freestile_query.html">freestile_query</a></span><span class="op">(</span></span>
+<span>  <span class="st">"SELECT * FROM ST_Read('counties.shp') WHERE pop &gt; 50000"</span>,</span>
+<span>  <span class="st">"large_counties.pmtiles"</span></span>
+<span><span class="op">)</span></span></code></pre></div>
+</div>
+<p>For very large point datasets, set <code>streaming = "always"</code> to use the streaming pipeline, which avoids loading the full query result into memory:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb12"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/freestile_query.html">freestile_query</a></span><span class="op">(</span></span>
 <span>  query <span class="op">=</span> <span class="st">"SELECT naics, state, ST_Point(lon, lat) AS geometry FROM jobs_dots"</span>,</span>
 <span>  output <span class="op">=</span> <span class="st">"us_jobs_dots.pmtiles"</span>,</span>
@@ -137,201 +216,17 @@
 <span>  overwrite <span class="op">=</span> <span class="cn">TRUE</span></span>
 <span><span class="op">)</span></span></code></pre></div>
 </div>
+<p>On a recent run, this streamed 146 million US job points from DuckDB into a 2.3 GB PMTiles archive in about 12 minutes.</p>
 <p><img src="images/paste-1.png"></p>
 <p><img src="images/paste-2.png"></p>
-</section><section class="level2"><h2 id="creating-your-first-tileset">Creating your first tileset<a class="anchor" aria-label="anchor" href="#creating-your-first-tileset"></a>
-</h2>
-<p>The main function is <code><a href="../reference/freestile.html">freestile()</a></code>. Pass it spatial data and an output path.</p>
-<p><strong>R</strong></p>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb5"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://r-spatial.github.io/sf/" class="external-link">sf</a></span><span class="op">)</span></span>
-<span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://walker-data.com/freestiler/">freestiler</a></span><span class="op">)</span></span>
-<span></span>
-<span><span class="va">nc</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/st_read.html" class="external-link">st_read</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/system.file.html" class="external-link">system.file</a></span><span class="op">(</span><span class="st">"shape/nc.shp"</span>, package <span class="op">=</span> <span class="st">"sf"</span><span class="op">)</span><span class="op">)</span></span>
-<span></span>
-<span><span class="fu"><a href="../reference/freestile.html">freestile</a></span><span class="op">(</span><span class="va">nc</span>, <span class="st">"nc_counties.pmtiles"</span>, layer_name <span class="op">=</span> <span class="st">"counties"</span><span class="op">)</span></span></code></pre></div>
-</div>
-<pre><code>Creating MLT tiles (zoom 0-14) for 100 features across 1 layer...
-  Tiling layer 'counties' (zoom 0-14)...
-Created nc_counties.pmtiles (65.2 KB)</code></pre>
-<p>This counties example is intentionally simple. It is useful for verifying that your installation works, but it is not the most interesting demonstration of what the package can do.</p>
-<p><strong>Python</strong></p>
-<div class="sourceCode" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> geopandas <span class="im">as</span> gpd</span>
-<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> freestiler <span class="im">import</span> freestile</span>
-<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>gdf <span class="op">=</span> gpd.read_file(<span class="st">"nc.shp"</span>)</span>
-<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>freestile(gdf, <span class="st">"nc_counties.pmtiles"</span>, layer_name<span class="op">=</span><span class="st">"counties"</span>)</span></code></pre></div>
-<pre><code>Creating MLT tiles (zoom 0-14) for 100 features across 1 layer...
-  Tiling layer 'counties' (zoom 0-14)...
-Created nc_counties.pmtiles (65.2 KB)</code></pre>
-</section><section class="level2"><h2 id="viewing-tiles">Viewing tiles<a class="anchor" aria-label="anchor" href="#viewing-tiles"></a>
-</h2>
-<section class="level3"><h3 id="r-1">R<a class="anchor" aria-label="anchor" href="#r-1"></a>
+</section><section class="level3"><h3 id="multi-layer-tilesets">Multi-layer tilesets<a class="anchor" aria-label="anchor" href="#multi-layer-tilesets"></a>
 </h3>
-<p>Use the <a href="https://walker-data.com/mapgl/" class="external-link">mapgl</a> package to view your tileset in R. mapgl supports both MLT and MVT tiles. PMTiles need HTTP range requests, so start a local file server first:</p>
-<div class="sourceCode" id="cb9"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Serve from /tmp on port 8082 (pick whichever you prefer)</span></span>
-<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="ex">npx</span> http-server /tmp <span class="at">-p</span> 8082 <span class="at">--cors</span> <span class="at">-c-1</span></span></code></pre></div>
-<p>Then point mapgl at the URL:</p>
+<p>Pass a named list to create multi-layer tilesets. Use <code><a href="../reference/freestile_layer.html">freestile_layer()</a></code> if you want per-layer zoom control:</p>
 <div class="cell">
-<div class="sourceCode cell-code" id="cb10"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://walker-data.com/mapgl/" class="external-link">mapgl</a></span><span class="op">)</span></span>
-<span></span>
-<span><span class="fu"><a href="https://walker-data.com/mapgl/reference/maplibre.html" class="external-link">maplibre</a></span><span class="op">(</span><span class="op">)</span> <span class="op">|&gt;</span></span>
-<span>  <span class="fu"><a href="https://walker-data.com/mapgl/reference/add_pmtiles_source.html" class="external-link">add_pmtiles_source</a></span><span class="op">(</span></span>
-<span>    id <span class="op">=</span> <span class="st">"counties-src"</span>,</span>
-<span>    url <span class="op">=</span> <span class="st">"http://localhost:8082/nc_counties.pmtiles"</span></span>
-<span>  <span class="op">)</span> <span class="op">|&gt;</span></span>
-<span>  <span class="fu"><a href="https://walker-data.com/mapgl/reference/add_fill_layer.html" class="external-link">add_fill_layer</a></span><span class="op">(</span></span>
-<span>    id <span class="op">=</span> <span class="st">"county-fill"</span>,</span>
-<span>    source <span class="op">=</span> <span class="st">"counties-src"</span>,</span>
-<span>    source_layer <span class="op">=</span> <span class="st">"counties"</span>,</span>
-<span>    fill_color <span class="op">=</span> <span class="st">"#00897b"</span>,</span>
-<span>    fill_opacity <span class="op">=</span> <span class="fl">0.5</span></span>
-<span>  <span class="op">)</span> <span class="op">|&gt;</span></span>
-<span>  <span class="fu"><a href="https://walker-data.com/mapgl/reference/add_line_layer.html" class="external-link">add_line_layer</a></span><span class="op">(</span></span>
-<span>    id <span class="op">=</span> <span class="st">"county-borders"</span>,</span>
-<span>    source <span class="op">=</span> <span class="st">"counties-src"</span>,</span>
-<span>    source_layer <span class="op">=</span> <span class="st">"counties"</span>,</span>
-<span>    line_color <span class="op">=</span> <span class="st">"#004d40"</span>,</span>
-<span>    line_width <span class="op">=</span> <span class="fl">1</span></span>
-<span>  <span class="op">)</span></span></code></pre></div>
-</div>
-</section><section class="level3"><h3 id="python-1">Python<a class="anchor" aria-label="anchor" href="#python-1"></a>
-</h3>
-<p>Python viewer stacks are less settled than the R <code>mapgl</code> path. For maximum compatibility today, create tiles with <code>tile_format="mvt"</code>:</p>
-<div class="sourceCode" id="cb11"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a>freestile(gdf, <span class="st">"nc_mvt.pmtiles"</span>, layer_name<span class="op">=</span><span class="st">"counties"</span>, tile_format<span class="op">=</span><span class="st">"mvt"</span>)</span></code></pre></div>
-<p>Viewer support for MLT in Python will improve as Python wrappers catch up with current MapLibre GL JS releases. In the meantime, MVT is the safe default for Python-facing examples, and either MVT or MLT can be viewed directly in the browser with current <a href="https://maplibre.org/" class="external-link">MapLibre GL JS</a>.</p>
-</section></section><section class="level2"><h2 id="mlt-vs-mvt-format">MLT vs MVT format<a class="anchor" aria-label="anchor" href="#mlt-vs-mvt-format"></a>
-</h2>
-<p>The default format is MLT (MapLibre Tiles). To use MVT instead:</p>
-<p><strong>R</strong></p>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb12"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="fu"><a href="../reference/freestile.html">freestile</a></span><span class="op">(</span><span class="va">nc</span>, <span class="st">"nc_mvt.pmtiles"</span>, layer_name <span class="op">=</span> <span class="st">"counties"</span>, tile_format <span class="op">=</span> <span class="st">"mvt"</span><span class="op">)</span></span></code></pre></div>
-</div>
-<p><strong>Python</strong></p>
-<div class="sourceCode" id="cb13"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a>freestile(gdf, <span class="st">"nc_mvt.pmtiles"</span>, layer_name<span class="op">=</span><span class="st">"counties"</span>, tile_format<span class="op">=</span><span class="st">"mvt"</span>)</span></code></pre></div>
-<p>MLT is a columnar encoding that can be more compact than MVT, especially for polygon-heavy datasets. MVT is the universal fallback supported by all mapping libraries. Use MVT when maximum viewer compatibility is needed – particularly for Python viewers today and for large public-facing point tilesets.</p>
-</section><section class="level2"><h2 id="controlling-zoom-levels">Controlling zoom levels<a class="anchor" aria-label="anchor" href="#controlling-zoom-levels"></a>
-</h2>
-<p>The <code>min_zoom</code> and <code>max_zoom</code> parameters control the zoom range.</p>
-<p><strong>R</strong></p>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb14"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="fu"><a href="../reference/freestile.html">freestile</a></span><span class="op">(</span><span class="va">nc</span>, <span class="st">"nc_z4_10.pmtiles"</span>,</span>
-<span>  layer_name <span class="op">=</span> <span class="st">"counties"</span>,</span>
-<span>  min_zoom <span class="op">=</span> <span class="fl">4</span>,</span>
-<span>  max_zoom <span class="op">=</span> <span class="fl">10</span></span>
-<span><span class="op">)</span></span></code></pre></div>
-</div>
-<p><strong>Python</strong></p>
-<div class="sourceCode" id="cb15"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a>freestile(gdf, <span class="st">"nc_z4_10.pmtiles"</span>,</span>
-<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>    layer_name<span class="op">=</span><span class="st">"counties"</span>,</span>
-<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>    min_zoom<span class="op">=</span><span class="dv">4</span>,</span>
-<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>    max_zoom<span class="op">=</span><span class="dv">10</span></span>
-<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
-</section><section class="level2"><h2 id="feature-dropping-with-drop_rate">Feature dropping with drop_rate<a class="anchor" aria-label="anchor" href="#feature-dropping-with-drop_rate"></a>
-</h2>
-<p>For large datasets, <code>drop_rate</code> provides exponential feature thinning at lower zoom levels. Points are thinned using spatial ordering (Morton curve) to maintain even coverage; polygons and lines are thinned by area.</p>
-<p>The <code>base_zoom</code> parameter controls the zoom level above which all features are present. Below <code>base_zoom</code>, features are progressively thinned. By default, <code>base_zoom</code> equals <code>max_zoom</code>.</p>
-<p><strong>R</strong></p>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb16"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="fu"><a href="../reference/freestile.html">freestile</a></span><span class="op">(</span><span class="va">nc</span>, <span class="st">"nc_dropping.pmtiles"</span>,</span>
-<span>  layer_name <span class="op">=</span> <span class="st">"counties"</span>,</span>
-<span>  drop_rate <span class="op">=</span> <span class="fl">2.5</span>,</span>
-<span>  base_zoom <span class="op">=</span> <span class="fl">10</span></span>
-<span><span class="op">)</span></span></code></pre></div>
-</div>
-<p><strong>Python</strong></p>
-<div class="sourceCode" id="cb17"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a>freestile(gdf, <span class="st">"nc_dropping.pmtiles"</span>,</span>
-<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>    layer_name<span class="op">=</span><span class="st">"counties"</span>,</span>
-<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a>    drop_rate<span class="op">=</span><span class="fl">2.5</span>,</span>
-<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a>    base_zoom<span class="op">=</span><span class="dv">10</span></span>
-<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
-</section><section class="level2"><h2 id="direct-file-input">Direct file input<a class="anchor" aria-label="anchor" href="#direct-file-input"></a>
-</h2>
-<p>Tile spatial files directly without loading them into R or Python first.</p>
-<p><strong>R</strong> – supports GeoParquet, GeoPackage, Shapefile, and other formats via DuckDB:</p>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb18"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># GeoParquet (uses the geoparquet engine)</span></span>
-<span><span class="fu"><a href="../reference/freestile_file.html">freestile_file</a></span><span class="op">(</span><span class="st">"census_blocks.parquet"</span>, <span class="st">"blocks.pmtiles"</span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># GeoPackage, Shapefile, or other formats (uses the DuckDB engine)</span></span>
-<span><span class="fu"><a href="../reference/freestile_file.html">freestile_file</a></span><span class="op">(</span><span class="st">"counties.gpkg"</span>, <span class="st">"counties.pmtiles"</span>, engine <span class="op">=</span> <span class="st">"duckdb"</span><span class="op">)</span></span></code></pre></div>
-</div>
-<p><strong>Python</strong> – published wheels include the DuckDB engine, so GeoPackage, Shapefile, and other DuckDB-backed formats work out of the box:</p>
-<div class="sourceCode" id="cb19"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> freestiler <span class="im">import</span> freestile_file</span>
-<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a><span class="co"># GeoParquet (uses the geoparquet engine)</span></span>
-<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a>freestile_file(<span class="st">"census_blocks.parquet"</span>, <span class="st">"blocks.pmtiles"</span>)</span>
-<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a><span class="co"># GeoPackage, Shapefile, or other formats (uses the DuckDB engine)</span></span>
-<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a>freestile_file(<span class="st">"counties.gpkg"</span>, <span class="st">"counties.pmtiles"</span>, engine<span class="op">=</span><span class="st">"duckdb"</span>)</span></code></pre></div>
-</section><section class="level2"><h2 id="sql-queries-with-duckdb">SQL queries with DuckDB<a class="anchor" aria-label="anchor" href="#sql-queries-with-duckdb"></a>
-</h2>
-<p>Run a SQL query through DuckDB’s spatial extension and pipe the results directly into the tiling engine. Filter, join, and transform your data with SQL before tiling.</p>
-<p><strong>R</strong></p>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb20"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="fu"><a href="../reference/freestile_query.html">freestile_query</a></span><span class="op">(</span></span>
-<span>  <span class="st">"SELECT * FROM ST_Read('counties.shp') WHERE pop &gt; 50000"</span>,</span>
-<span>  <span class="st">"large_counties.pmtiles"</span></span>
-<span><span class="op">)</span></span>
-<span></span>
-<span><span class="fu"><a href="../reference/freestile_query.html">freestile_query</a></span><span class="op">(</span></span>
-<span>  <span class="st">"SELECT * FROM read_parquet('blocks.parquet') WHERE state = 'NC'"</span>,</span>
-<span>  <span class="st">"nc_blocks.pmtiles"</span></span>
-<span><span class="op">)</span></span></code></pre></div>
-</div>
-<p><strong>Python</strong></p>
-<div class="sourceCode" id="cb21"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> freestiler <span class="im">import</span> freestile_query</span>
-<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>freestile_query(</span>
-<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a>    <span class="st">"SELECT * FROM ST_Read('counties.shp') WHERE pop &gt; 50000"</span>,</span>
-<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>    <span class="st">"large_counties.pmtiles"</span></span>
-<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a>)</span>
-<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a>freestile_query(</span>
-<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a>    <span class="st">"SELECT * FROM read_parquet('blocks.parquet') WHERE state = 'NC'"</span>,</span>
-<span id="cb21-10"><a href="#cb21-10" aria-hidden="true" tabindex="-1"></a>    <span class="st">"nc_blocks.pmtiles"</span></span>
-<span id="cb21-11"><a href="#cb21-11" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
-<p>For very large point datasets, set <code>streaming = "always"</code> to force the streaming point pipeline:</p>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb22"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="fu"><a href="../reference/freestile_query.html">freestile_query</a></span><span class="op">(</span></span>
-<span>  query <span class="op">=</span> <span class="st">"SELECT category, ST_Point(lon, lat) AS geometry FROM points_table"</span>,</span>
-<span>  output <span class="op">=</span> <span class="st">"points.pmtiles"</span>,</span>
-<span>  layer_name <span class="op">=</span> <span class="st">"points"</span>,</span>
-<span>  tile_format <span class="op">=</span> <span class="st">"mvt"</span>,</span>
-<span>  min_zoom <span class="op">=</span> <span class="fl">4</span>,</span>
-<span>  max_zoom <span class="op">=</span> <span class="fl">14</span>,</span>
-<span>  base_zoom <span class="op">=</span> <span class="fl">14</span>,</span>
-<span>  drop_rate <span class="op">=</span> <span class="fl">2.5</span>,</span>
-<span>  source_crs <span class="op">=</span> <span class="st">"EPSG:4326"</span>,</span>
-<span>  streaming <span class="op">=</span> <span class="st">"always"</span></span>
-<span><span class="op">)</span></span></code></pre></div>
-</div>
-</section><section class="level2"><h2 id="multi-layer-tiles">Multi-layer tiles<a class="anchor" aria-label="anchor" href="#multi-layer-tiles"></a>
-</h2>
-<p>Pass a named list (R) or dictionary (Python) to create multi-layer tilesets.</p>
-<p><strong>R</strong></p>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb23"><pre class="downlit sourceCode r">
+<div class="sourceCode cell-code" id="cb13"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">pts</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://r-spatial.github.io/sf/reference/geos_unary.html" class="external-link">st_centroid</a></span><span class="op">(</span><span class="va">nc</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="../reference/freestile.html">freestile</a></span><span class="op">(</span></span>
-<span>  <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>counties <span class="op">=</span> <span class="va">nc</span>, centroids <span class="op">=</span> <span class="va">pts</span><span class="op">)</span>,</span>
-<span>  <span class="st">"nc_layers.pmtiles"</span></span>
-<span><span class="op">)</span></span></code></pre></div>
-</div>
-<p>Use <code><a href="../reference/freestile_layer.html">freestile_layer()</a></code> for per-layer zoom control:</p>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb24"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="fu"><a href="../reference/freestile.html">freestile</a></span><span class="op">(</span></span>
 <span>  <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span></span>
 <span>    counties <span class="op">=</span> <span class="fu"><a href="../reference/freestile_layer.html">freestile_layer</a></span><span class="op">(</span><span class="va">nc</span>, min_zoom <span class="op">=</span> <span class="fl">0</span>, max_zoom <span class="op">=</span> <span class="fl">10</span><span class="op">)</span>,</span>
 <span>    centroids <span class="op">=</span> <span class="fu"><a href="../reference/freestile_layer.html">freestile_layer</a></span><span class="op">(</span><span class="va">pts</span>, min_zoom <span class="op">=</span> <span class="fl">6</span>, max_zoom <span class="op">=</span> <span class="fl">14</span><span class="op">)</span></span>
@@ -339,53 +234,27 @@ Created nc_counties.pmtiles (65.2 KB)</code></pre>
 <span>  <span class="st">"nc_layers.pmtiles"</span></span>
 <span><span class="op">)</span></span></code></pre></div>
 </div>
-<p><strong>Python</strong> – use <code><a href="../reference/freestile_layer.html">freestile_layer()</a></code> for per-layer zoom control:</p>
-<div class="sourceCode" id="cb25"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> freestiler <span class="im">import</span> freestile, freestile_layer</span>
-<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a>centroids <span class="op">=</span> gdf.copy()</span>
-<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a>centroids.geometry <span class="op">=</span> gdf.geometry.centroid</span>
-<span id="cb25-5"><a href="#cb25-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb25-6"><a href="#cb25-6" aria-hidden="true" tabindex="-1"></a>freestile(</span>
-<span id="cb25-7"><a href="#cb25-7" aria-hidden="true" tabindex="-1"></a>    {</span>
-<span id="cb25-8"><a href="#cb25-8" aria-hidden="true" tabindex="-1"></a>        <span class="st">"counties"</span>: freestile_layer(gdf, min_zoom<span class="op">=</span><span class="dv">0</span>, max_zoom<span class="op">=</span><span class="dv">10</span>),</span>
-<span id="cb25-9"><a href="#cb25-9" aria-hidden="true" tabindex="-1"></a>        <span class="st">"centroids"</span>: freestile_layer(centroids, min_zoom<span class="op">=</span><span class="dv">6</span>, max_zoom<span class="op">=</span><span class="dv">14</span>),</span>
-<span id="cb25-10"><a href="#cb25-10" aria-hidden="true" tabindex="-1"></a>    },</span>
-<span id="cb25-11"><a href="#cb25-11" aria-hidden="true" tabindex="-1"></a>    <span class="st">"nc_layers.pmtiles"</span></span>
-<span id="cb25-12"><a href="#cb25-12" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
-</section><section class="level2"><h2 id="point-clustering">Point clustering<a class="anchor" aria-label="anchor" href="#point-clustering"></a>
-</h2>
-<p>For point layers, <code>cluster_distance</code> merges nearby points into clusters with a <code>point_count</code> attribute.</p>
-<p><strong>R</strong></p>
+</section><section class="level3"><h3 id="point-clustering">Point clustering<a class="anchor" aria-label="anchor" href="#point-clustering"></a>
+</h3>
+<p>For point layers, <code>cluster_distance</code> merges nearby points into clusters with a <code>point_count</code> attribute:</p>
 <div class="cell">
-<div class="sourceCode cell-code" id="cb26"><pre class="downlit sourceCode r">
+<div class="sourceCode cell-code" id="cb14"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/freestile.html">freestile</a></span><span class="op">(</span><span class="va">pts</span>, <span class="st">"nc_clustered.pmtiles"</span>,</span>
 <span>  layer_name <span class="op">=</span> <span class="st">"centroids"</span>,</span>
 <span>  cluster_distance <span class="op">=</span> <span class="fl">50</span>,</span>
 <span>  cluster_maxzoom <span class="op">=</span> <span class="fl">8</span></span>
 <span><span class="op">)</span></span></code></pre></div>
 </div>
-<p><strong>Python</strong></p>
-<div class="sourceCode" id="cb27"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a>freestile(centroids, <span class="st">"nc_clustered.pmtiles"</span>,</span>
-<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a>    layer_name<span class="op">=</span><span class="st">"centroids"</span>,</span>
-<span id="cb27-3"><a href="#cb27-3" aria-hidden="true" tabindex="-1"></a>    cluster_distance<span class="op">=</span><span class="dv">50</span>,</span>
-<span id="cb27-4"><a href="#cb27-4" aria-hidden="true" tabindex="-1"></a>    cluster_maxzoom<span class="op">=</span><span class="dv">8</span></span>
-<span id="cb27-5"><a href="#cb27-5" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
-</section><section class="level2"><h2 id="feature-coalescing">Feature coalescing<a class="anchor" aria-label="anchor" href="#feature-coalescing"></a>
-</h2>
-<p>The <code>coalesce</code> parameter merges features with identical attributes within each tile. Lines sharing endpoints are joined; polygons are grouped into MultiPolygons.</p>
-<p><strong>R</strong></p>
+</section><section class="level3"><h3 id="feature-coalescing">Feature coalescing<a class="anchor" aria-label="anchor" href="#feature-coalescing"></a>
+</h3>
+<p>The <code>coalesce</code> parameter merges features with identical attributes within each tile. Lines sharing endpoints are joined, and polygons are grouped into MultiPolygons:</p>
 <div class="cell">
-<div class="sourceCode cell-code" id="cb28"><pre class="downlit sourceCode r">
+<div class="sourceCode cell-code" id="cb15"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/freestile.html">freestile</a></span><span class="op">(</span><span class="va">nc</span>, <span class="st">"nc_coalesced.pmtiles"</span>,</span>
 <span>  layer_name <span class="op">=</span> <span class="st">"counties"</span>,</span>
 <span>  coalesce <span class="op">=</span> <span class="cn">TRUE</span></span>
 <span><span class="op">)</span></span></code></pre></div>
 </div>
-<p><strong>Python</strong></p>
-<div class="sourceCode" id="cb29"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a>freestile(gdf, <span class="st">"nc_coalesced.pmtiles"</span>,</span>
-<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a>    layer_name<span class="op">=</span><span class="st">"counties"</span>,</span>
-<span id="cb29-3"><a href="#cb29-3" aria-hidden="true" tabindex="-1"></a>    coalesce<span class="op">=</span><span class="va">True</span></span>
-<span id="cb29-4"><a href="#cb29-4" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </section><script id="quarto-html-after-body" type="application/javascript">
   window.document.addEventListener("DOMContentLoaded", function (event) {
       var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);

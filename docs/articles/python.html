@@ -75,66 +75,61 @@
 
 
 
-    <section class="level2"><h2 id="overview">Overview<a class="anchor" aria-label="anchor" href="#overview"></a>
-</h2>
-<p>freestiler’s Python package shares the same Rust engine as the R package. This article covers Python-specific setup: installation, virtual environments, and source builds.</p>
-<p>For usage examples (basic tiling, multi-layer, feature dropping, clustering, coalescing, file input, SQL queries), see the <a href="getting-started.html">Getting Started</a> article, which covers R and Python side-by-side.</p>
-</section><section class="level2"><h2 id="prerequisites">Prerequisites<a class="anchor" aria-label="anchor" href="#prerequisites"></a>
-</h2>
-<p>For normal installs from PyPI, you just need Python 3.9+ and pip.</p>
-<p>You only need a Rust toolchain if:</p>
-<ul>
-<li>a wheel is not available for your platform</li>
-<li>you want an editable local build</li>
-<li>you want to build wheels yourself</li>
-</ul></section><section class="level2"><h2 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
-</h2>
-<section class="level3"><h3 id="virtual-environment-setup">Virtual environment setup<a class="anchor" aria-label="anchor" href="#virtual-environment-setup"></a>
+    <p>freestiler’s Python package shares the same Rust engine as the R package. This article covers Python-specific installation and usage. For the full walkthrough of tiling concepts (zoom levels, drop rates, multi-layer, clustering, DuckDB queries), see the <a href="getting-started.html">Getting Started</a> article - the API is nearly identical between R and Python.</p>
+<section class="level3"><h3 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
 </h3>
-<div class="sourceCode" id="cb1"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="bu">cd</span> python</span>
-<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="ex">python3</span> <span class="at">-m</span> venv .venv</span>
-<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="bu">source</span> .venv/bin/activate   <span class="co"># On Windows: .venv\Scripts\activate</span></span></code></pre></div>
-</section><section class="level3"><h3 id="install-from-source">Install from source<a class="anchor" aria-label="anchor" href="#install-from-source"></a>
+<p>Install from PyPI:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install freestiler</span></code></pre></div>
+<p>Published wheels include the full feature set: GeoPandas input, direct file tiling, DuckDB-backed file input, and SQL query support. You just need Python 3.9+ and pip.</p>
+</section><section class="level3"><h3 id="building-from-source">Building from source<a class="anchor" aria-label="anchor" href="#building-from-source"></a>
 </h3>
-<div class="sourceCode" id="cb2"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install <span class="at">-e</span> .</span></code></pre></div>
-<p>This builds the Rust extension and installs the package in editable mode. GeoPandas and its dependencies are installed automatically.</p>
-</section><section class="level3"><h3 id="install-from-pypi">Install from PyPI<a class="anchor" aria-label="anchor" href="#install-from-pypi"></a>
+<p>You only need a Rust toolchain if a wheel isn’t available for your platform or you want an editable local build:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> clone https://github.com/walkerke/freestiler.git</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="bu">cd</span> freestiler/python</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="ex">python3</span> <span class="at">-m</span> venv .venv</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="bu">source</span> .venv/bin/activate</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install maturin</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="ex">python3</span> <span class="at">-m</span> maturin develop <span class="at">--release</span></span></code></pre></div>
+</section><section class="level3"><h3 id="basic-usage">Basic usage<a class="anchor" aria-label="anchor" href="#basic-usage"></a>
 </h3>
-<div class="sourceCode" id="cb3"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install freestiler</span></code></pre></div>
-<p>Published PyPI wheels ship the native feature set: GeoPandas input, multi-layer tiling, feature management, direct GeoParquet file input, DuckDB-backed file input, and DuckDB SQL query support.</p>
-</section><section class="level3"><h3 id="build-with-maturin">Build with maturin<a class="anchor" aria-label="anchor" href="#build-with-maturin"></a>
+<p>The Python API mirrors R closely. Here’s the equivalent of the North Carolina example from the Getting Started article:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> geopandas <span class="im">as</span> gpd</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> freestiler <span class="im">import</span> freestile</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>gdf <span class="op">=</span> gpd.read_file(<span class="st">"nc.shp"</span>)</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>freestile(gdf, <span class="st">"nc_counties.pmtiles"</span>, layer_name<span class="op">=</span><span class="st">"counties"</span>)</span></code></pre></div>
+<p>Multi-layer tilesets use a dictionary instead of R’s named list:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> freestiler <span class="im">import</span> freestile, freestile_layer</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>centroids <span class="op">=</span> gdf.copy()</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>centroids.geometry <span class="op">=</span> gdf.geometry.centroid</span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>freestile(</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>    {</span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>        <span class="st">"counties"</span>: freestile_layer(gdf, min_zoom<span class="op">=</span><span class="dv">0</span>, max_zoom<span class="op">=</span><span class="dv">10</span>),</span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>        <span class="st">"centroids"</span>: freestile_layer(centroids, min_zoom<span class="op">=</span><span class="dv">6</span>, max_zoom<span class="op">=</span><span class="dv">14</span>),</span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>    },</span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>    <span class="st">"nc_layers.pmtiles"</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+<p>File input and DuckDB queries work the same way:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> freestiler <span class="im">import</span> freestile_file, freestile_query</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>freestile_file(<span class="st">"census_blocks.parquet"</span>, <span class="st">"blocks.pmtiles"</span>)</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>freestile_query(</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>    query<span class="op">=</span><span class="st">"SELECT * FROM read_parquet('blocks.parquet') WHERE state = 'NC'"</span>,</span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>    output<span class="op">=</span><span class="st">"nc_blocks.pmtiles"</span>,</span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>    layer_name<span class="op">=</span><span class="st">"blocks"</span></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+</section><section class="level3"><h3 id="viewing-tiles">Viewing tiles<a class="anchor" aria-label="anchor" href="#viewing-tiles"></a>
 </h3>
-<p>For development builds with maturin directly:</p>
-<div class="sourceCode" id="cb4"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install maturin</span>
-<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="ex">python3</span> <span class="at">-m</span> maturin develop <span class="at">--release</span></span></code></pre></div>
-</section></section><section class="level2"><h2 id="source-builds-and-features">Source builds and features<a class="anchor" aria-label="anchor" href="#source-builds-and-features"></a>
-</h2>
-<p>GeoParquet and DuckDB support are part of the default Python build. If you want to build from a local checkout with the same default feature set:</p>
-<div class="sourceCode" id="cb5"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> clone https://github.com/walkerke/freestiler.git</span>
-<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="bu">cd</span> freestiler/python</span>
-<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="ex">python3</span> <span class="at">-m</span> venv .venv</span>
-<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="bu">source</span> .venv/bin/activate</span>
-<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install maturin</span>
-<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a><span class="ex">python3</span> <span class="at">-m</span> maturin develop <span class="at">--release</span></span></code></pre></div>
-<p>To build a wheel instead of using an editable install:</p>
-<div class="sourceCode" id="cb6"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="ex">python3</span> <span class="at">-m</span> maturin build <span class="at">--release</span> <span class="at">--out</span> dist</span>
-<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install dist/freestiler-<span class="pp">*</span>.whl</span></code></pre></div>
-</section><section class="level2"><h2 id="viewing-tiles">Viewing tiles<a class="anchor" aria-label="anchor" href="#viewing-tiles"></a>
-</h2>
-<p>Python tiling is in good shape. Python viewing is less settled.</p>
-<p>The safe recommendations today are:</p>
-<ul>
-<li>create Python-facing examples with <code>tile_format="mvt"</code>
-</li>
-<li>treat browser viewing with current MapLibre GL JS as the most predictable PMTiles path</li>
-<li>assume local PMTiles need a real static server with HTTP range support</li>
-</ul>
-<p>One important caveat: Python’s built-in <code>http.server</code> does not support byte range requests, so it is not a reliable PMTiles server. Use a real static file server instead, such as:</p>
-<div class="sourceCode" id="cb7"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="ex">npx</span> http-server /path/to/tiles <span class="at">-p</span> 8082 <span class="at">--cors</span> <span class="at">-c-1</span></span></code></pre></div>
-<p>At the moment, the R <code>mapgl</code> workflow is the most reliable local viewing path for PMTiles generated by freestiler. For Python, focus on tiling first and treat viewing examples as browser-based unless you have tested a specific viewer stack yourself.</p>
-</section><section class="level2"><h2 id="r-vs-python-api">R vs Python API<a class="anchor" aria-label="anchor" href="#r-vs-python-api"></a>
-</h2>
-<p>The Python API mirrors R closely, with Pythonic conventions:</p>
+<p>I’d recommend creating tiles with <code>tile_format="mvt"</code> for Python-facing work for now. Python viewer stacks are still catching up on MLT support, and MVT works everywhere.</p>
+<p>One important caveat: Python’s built-in <code>http.server</code> does not support byte-range requests, so it won’t work as a PMTiles server. You’ll want to use a real static file server instead:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="ex">npx</span> http-server /path/to/tiles <span class="at">-p</span> 8082 <span class="at">--cors</span> <span class="at">-c-1</span></span></code></pre></div>
+<p>You can view any PMTiles file (MLT or MVT) in the browser with <a href="https://maplibre.org/" class="external-link">MapLibre GL JS</a> 5.17+ and the <a href="https://docs.protomaps.com/pmtiles/" class="external-link">PMTiles protocol</a>. If you’re also an R user, the <a href="https://walker-data.com/mapgl/" class="external-link">mapgl</a> package is the most reliable local viewing path right now.</p>
+</section><section class="level3"><h3 id="r-vs-python-api">R vs Python API<a class="anchor" aria-label="anchor" href="#r-vs-python-api"></a>
+</h3>
 <table class="table caption-top">
 <colgroup>
 <col style="width: 45%">
@@ -154,8 +149,8 @@
 </tr>
 <tr class="even">
 <td>Multi-layer</td>
-<td>Named list of sf objects</td>
-<td>Dict of GeoDataFrames</td>
+<td>Named list</td>
+<td>Dict</td>
 </tr>
 <tr class="odd">
 <td>Default format</td>
@@ -173,29 +168,24 @@
 <td><code>drop_rate=2.5</code></td>
 </tr>
 <tr class="even">
-<td>Base zoom</td>
-<td><code>base_zoom = 10</code></td>
-<td><code>base_zoom=10</code></td>
-</tr>
-<tr class="odd">
 <td>Point clustering</td>
 <td><code>cluster_distance = 50</code></td>
 <td><code>cluster_distance=50</code></td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Feature coalescing</td>
 <td><code>coalesce = TRUE</code></td>
 <td><code>coalesce=True</code></td>
 </tr>
-<tr class="odd">
-<td>Layer helper</td>
-<td><code><a href="../reference/freestile_layer.html">freestile_layer()</a></code></td>
-<td><code><a href="../reference/freestile_layer.html">freestile_layer()</a></code></td>
-</tr>
 <tr class="even">
-<td>File input engines</td>
-<td><code>engine = "auto"/"geoparquet"/"duckdb"</code></td>
-<td><code>engine="auto"/"geoparquet"/"duckdb"</code></td>
+<td>File input</td>
+<td><code><a href="../reference/freestile_file.html">freestile_file()</a></code></td>
+<td><code><a href="../reference/freestile_file.html">freestile_file()</a></code></td>
+</tr>
+<tr class="odd">
+<td>DuckDB queries</td>
+<td><code><a href="../reference/freestile_query.html">freestile_query()</a></code></td>
+<td><code><a href="../reference/freestile_query.html">freestile_query()</a></code></td>
 </tr>
 </tbody>
 </table></section><script id="quarto-html-after-body" type="application/javascript">
