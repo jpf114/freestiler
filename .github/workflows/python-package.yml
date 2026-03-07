@@ -27,18 +27,83 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-13, macos-14]
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.9"
+            manylinux: "2_28"
+            duckdb_explicit_platform: "linux_amd64"
+          - os: ubuntu-latest
+            python-version: "3.10"
+            manylinux: "2_28"
+            duckdb_explicit_platform: "linux_amd64"
+          - os: ubuntu-latest
+            python-version: "3.11"
+            manylinux: "2_28"
+            duckdb_explicit_platform: "linux_amd64"
+          - os: ubuntu-latest
+            python-version: "3.12"
+            manylinux: "2_28"
+            duckdb_explicit_platform: "linux_amd64"
+          - os: windows-latest
+            python-version: "3.9"
+            manylinux: "auto"
+            duckdb_explicit_platform: ""
+          - os: windows-latest
+            python-version: "3.10"
+            manylinux: "auto"
+            duckdb_explicit_platform: ""
+          - os: windows-latest
+            python-version: "3.11"
+            manylinux: "auto"
+            duckdb_explicit_platform: ""
+          - os: windows-latest
+            python-version: "3.12"
+            manylinux: "auto"
+            duckdb_explicit_platform: ""
+          - os: macos-13
+            python-version: "3.9"
+            manylinux: "auto"
+            duckdb_explicit_platform: ""
+          - os: macos-13
+            python-version: "3.10"
+            manylinux: "auto"
+            duckdb_explicit_platform: ""
+          - os: macos-13
+            python-version: "3.11"
+            manylinux: "auto"
+            duckdb_explicit_platform: ""
+          - os: macos-13
+            python-version: "3.12"
+            manylinux: "auto"
+            duckdb_explicit_platform: ""
+          - os: macos-14
+            python-version: "3.9"
+            manylinux: "auto"
+            duckdb_explicit_platform: ""
+          - os: macos-14
+            python-version: "3.10"
+            manylinux: "auto"
+            duckdb_explicit_platform: ""
+          - os: macos-14
+            python-version: "3.11"
+            manylinux: "auto"
+            duckdb_explicit_platform: ""
+          - os: macos-14
+            python-version: "3.12"
+            manylinux: "auto"
+            duckdb_explicit_platform: ""
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
       - uses: PyO3/maturin-action@v1
+        env:
+          DUCKDB_EXPLICIT_PLATFORM: ${{ matrix.duckdb_explicit_platform }}
         with:
           command: build
           args: --manifest-path python/Cargo.toml --release --out dist
-          manylinux: auto
+          manylinux: ${{ matrix.manylinux }}
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}-py${{ matrix.python-version }}
