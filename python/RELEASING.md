@@ -8,6 +8,7 @@ Current wheel policy:
 - Published wheels include the default feature set.
 - GeoParquet support is included.
 - DuckDB support is included.
+- Supported wheel targets are Python 3.9 through 3.14.
 
 ## Before releasing
 

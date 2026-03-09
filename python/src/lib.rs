@@ -43,7 +43,7 @@ impl ProgressReporter for PyReporter {
 
 fn parse_layers_from_py(
     py: Python<'_>,
-    layers: &[PyObject],
+    layers: &[Py<PyAny>],
     generate_ids: bool,
 ) -> PyResult<Vec<LayerData>> {
     let mut result = Vec::new();
@@ -235,7 +235,7 @@ fn parse_layers_from_py(
     cluster_maxzoom, do_coalesce))]
 fn _freestile(
     py: Python<'_>,
-    layers: Vec<PyObject>,
+    layers: Vec<Py<PyAny>>,
     output_path: &str,
     tile_format: &str,
     min_zoom: u8,

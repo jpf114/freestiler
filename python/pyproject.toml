@@ -1,13 +1,13 @@
 [build-system]
-requires = ["maturin>=1.7,<2.0"]
+requires = ["maturin>=1.8,<2.0"]
 build-backend = "maturin"
 
 [project]
 name = "freestiler"
-version = "0.1.4"
+version = "0.1.5"
 description = "Rust-powered MLT/MVT vector tile engine for Python"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.9,<3.15"
 license = {text = "MIT"}
 license-files = ["LICENSE.md"]
 authors = [
@@ -24,6 +24,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Rust",
     "Topic :: Scientific/Engineering :: GIS",
     "Typing :: Typed",
@@ -48,7 +50,7 @@ test = [
 ]
 dev = [
     "build>=1.2",
-    "maturin>=1.7,<2.0",
+    "maturin>=1.8,<2.0",
     "pyarrow>=14",
     "pytest>=7.0",
     "twine>=5.1",

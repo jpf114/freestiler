@@ -1,6 +1,6 @@
 [package]
 name = "freestiler-python"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 description = "PyO3 bindings for the freestiler Rust vector tile engine"
 license = "MIT"
@@ -21,7 +21,7 @@ fastpfor = ["freestiler-core/fastpfor"]
 fsst = ["freestiler-core/fsst"]
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module"] }
+pyo3 = { version = "0.27", features = ["extension-module"] }
 freestiler-core = { path = "../src/rust/freestiler-core" }
 
 # Needed directly for WKB parsing and geometry type conversion

@@ -31,6 +31,8 @@ devtools::install_github("walkerke/freestiler")
 pip install freestiler
 ```
 
+Published PyPI wheels currently target Python 3.9 through 3.14.
+
 See the [Python Setup](https://walker-data.com/freestiler/articles/python.html) article for more details.
 
 ## Quick start

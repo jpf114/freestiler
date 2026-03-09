@@ -48,6 +48,16 @@ jobs:
             manylinux: "2_28"
             duckdb_explicit_platform: "linux_amd64"
             interpreter: "/opt/python/cp312-cp312/bin/python"
+          - os: ubuntu-latest
+            python-version: "3.13"
+            manylinux: "2_28"
+            duckdb_explicit_platform: "linux_amd64"
+            interpreter: "/opt/python/cp313-cp313/bin/python"
+          - os: ubuntu-latest
+            python-version: "3.14"
+            manylinux: "2_28"
+            duckdb_explicit_platform: "linux_amd64"
+            interpreter: "/opt/python/cp314-cp314/bin/python"
           - os: windows-latest
             python-version: "3.9"
             manylinux: "auto"
@@ -68,6 +78,16 @@ jobs:
             manylinux: "auto"
             duckdb_explicit_platform: ""
             interpreter: "python"
+          - os: windows-latest
+            python-version: "3.13"
+            manylinux: "auto"
+            duckdb_explicit_platform: ""
+            interpreter: "python"
+          - os: windows-latest
+            python-version: "3.14"
+            manylinux: "auto"
+            duckdb_explicit_platform: ""
+            interpreter: "python"
           - os: macos-14
             python-version: "3.9"
             manylinux: "auto"
@@ -85,6 +105,16 @@ jobs:
             interpreter: "python"
           - os: macos-14
             python-version: "3.12"
+            manylinux: "auto"
+            duckdb_explicit_platform: ""
+            interpreter: "python"
+          - os: macos-14
+            python-version: "3.13"
+            manylinux: "auto"
+            duckdb_explicit_platform: ""
+            interpreter: "python"
+          - os: macos-14
+            python-version: "3.14"
             manylinux: "auto"
             duckdb_explicit_platform: ""
             interpreter: "python"

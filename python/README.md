@@ -26,7 +26,7 @@ Install from PyPI:
 pip install freestiler
 ```
 
-Published PyPI wheels ship the native feature set:
+Published PyPI wheels ship the native feature set for Python 3.9 through 3.14:
 
 - GeoPandas input
 - Multi-layer tiling and feature management
