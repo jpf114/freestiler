@@ -64,6 +64,12 @@ freestile_query(
 For very large point tables, use `streaming="always"` and prefer
 `tile_format="mvt"` for maximum viewer compatibility.
 
+Performance note:
+
+- `freestile(gdf, ...)` is convenient for GeoDataFrames that already fit comfortably in memory.
+- For larger datasets, `freestile_file()` and `freestile_query()` are usually faster because they avoid a heavier GeoPandas-to-Rust handoff.
+- If your GeoDataFrame still needs `to_crs(4326)` before tiling, that reprojection step can dominate startup time on large layers.
+
 ## Source Builds
 
 Published wheels include GeoParquet and DuckDB support by default. To build

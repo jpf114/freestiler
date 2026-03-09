@@ -80,7 +80,7 @@
 </h3>
 <p>Install from PyPI:</p>
 <div class="sourceCode" id="cb1"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install freestiler</span></code></pre></div>
-<p>Published wheels include the full feature set: GeoPandas input, direct file tiling, DuckDB-backed file input, and SQL query support. You just need Python 3.9+ and pip.</p>
+<p>Published wheels include the full feature set: GeoPandas input, direct file tiling, DuckDB-backed file input, and SQL query support. Supported wheel targets are Python 3.9 through 3.14.</p>
 </section><section class="level3"><h3 id="building-from-source">Building from source<a class="anchor" aria-label="anchor" href="#building-from-source"></a>
 </h3>
 <p>You only need a Rust toolchain if a wheel isn’t available for your platform or you want an editable local build:</p>
@@ -122,6 +122,10 @@
 <span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>    output<span class="op">=</span><span class="st">"nc_blocks.pmtiles"</span>,</span>
 <span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>    layer_name<span class="op">=</span><span class="st">"blocks"</span></span>
 <span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+</section><section class="level3"><h3 id="performance-note">Performance note<a class="anchor" aria-label="anchor" href="#performance-note"></a>
+</h3>
+<p><code>freestile(gdf, ...)</code> is the most convenient Python entry point, but it does more preprocessing in GeoPandas before Rust starts tiling. For large datasets, <code><a href="../reference/freestile_file.html">freestile_file()</a></code> and <code><a href="../reference/freestile_query.html">freestile_query()</a></code> are usually the faster path.</p>
+<p>In practice, the most expensive part of the GeoDataFrame path is often reprojection to WGS84 plus geometry serialization before the Rust tiler takes over. If your data is already on disk or in DuckDB, prefer those paths for serious workloads.</p>
 </section><section class="level3"><h3 id="viewing-tiles">Viewing tiles<a class="anchor" aria-label="anchor" href="#viewing-tiles"></a>
 </h3>
 <p>I’d recommend creating tiles with <code>tile_format="mvt"</code> for Python-facing work for now. Python viewer stacks are still catching up on MLT support, and MVT works everywhere.</p>

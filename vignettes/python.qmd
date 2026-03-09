@@ -81,6 +81,12 @@ freestile_query(
 )
 ```
 
+### Performance note
+
+`freestile(gdf, ...)` is the most convenient Python entry point, but it does more preprocessing in GeoPandas before Rust starts tiling. For large datasets, `freestile_file()` and `freestile_query()` are usually the faster path.
+
+In practice, the most expensive part of the GeoDataFrame path is often reprojection to WGS84 plus geometry serialization before the Rust tiler takes over. If your data is already on disk or in DuckDB, prefer those paths for serious workloads.
+
 ### Viewing tiles
 
 I'd recommend creating tiles with `tile_format="mvt"` for Python-facing work for now. Python viewer stacks are still catching up on MLT support, and MVT works everywhere.

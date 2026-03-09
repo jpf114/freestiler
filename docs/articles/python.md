@@ -16,8 +16,8 @@ pip install freestiler
 ```
 
 Published wheels include the full feature set: GeoPandas input, direct
-file tiling, DuckDB-backed file input, and SQL query support. You just
-need Python 3.9+ and pip.
+file tiling, DuckDB-backed file input, and SQL query support. Supported
+wheel targets are Python 3.9 through 3.14.
 
 ### Building from source
 
@@ -77,6 +77,21 @@ freestile_query(
     layer_name="blocks"
 )
 ```
+
+### Performance note
+
+`freestile(gdf, ...)` is the most convenient Python entry point, but it
+does more preprocessing in GeoPandas before Rust starts tiling. For
+large datasets,
+[`freestile_file()`](https://walker-data.com/freestiler/reference/freestile_file.md)
+and
+[`freestile_query()`](https://walker-data.com/freestiler/reference/freestile_query.md)
+are usually the faster path.
+
+In practice, the most expensive part of the GeoDataFrame path is often
+reprojection to WGS84 plus geometry serialization before the Rust tiler
+takes over. If your data is already on disk or in DuckDB, prefer those
+paths for serious workloads.
 
 ### Viewing tiles
 
