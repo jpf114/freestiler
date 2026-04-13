@@ -873,3 +873,202 @@ freestile_query <- function(
     sprintf("%d bytes", as.integer(size))
   }
 }
+
+#' Create vector tiles from a PostGIS query
+#'
+#' Reads spatial data from a PostgreSQL/PostGIS database and generates
+#' vector tiles. Output can be a PMTiles file or a MongoDB collection.
+#'
+#' @param conn_str Character. PostgreSQL connection string, e.g.
+#'   \code{"postgresql://user:pass@host:5432/dbname"}.
+#' @param sql Character. SQL query that returns a geometry column.
+#' @param output Character. Path for the output .pmtiles file.
+#' @param layer_name Character. Name for the tile layer. If NULL, derived from
+#'   the output filename.
+#' @param tile_format Character. \code{"mlt"} (default) or \code{"mvt"}.
+#' @param min_zoom Integer. Minimum zoom level (default 0).
+#' @param max_zoom Integer. Maximum zoom level (default 14).
+#' @param base_zoom Integer. Zoom level at and above which all features are
+#'   present. NULL (default) uses max_zoom.
+#' @param drop_rate Numeric. Exponential drop rate. NULL (default) disables.
+#' @param cluster_distance Numeric. Pixel distance for clustering. NULL disables.
+#' @param cluster_maxzoom Integer. Max zoom for clustering. Default max_zoom - 1.
+#' @param coalesce Logical. Whether to merge features with identical attributes
+#'   (default FALSE).
+#' @param simplification Logical. Whether to snap geometries to the tile pixel
+#'   grid (default TRUE).
+#' @param overwrite Logical. Whether to overwrite existing output (default TRUE).
+#' @param quiet Logical. Whether to suppress progress (default FALSE).
+#' @param batch_size Integer. Batch size for cursor-based reading from PostGIS.
+#'   NULL (default) loads all features at once. Use a positive integer (e.g. 10000)
+#'   for large datasets to avoid memory issues.
+#'
+#' @return The output file path (invisibly).
+#'
+#' @examples
+#' \dontrun{
+#' freestile_postgis(
+#'   "postgresql://user:pass@localhost:5432/gis_db",
+#'   "SELECT geom, name FROM cities",
+#'   "cities.pmtiles"
+#' )
+#' }
+#'
+#' @export
+freestile_postgis <- function(
+    conn_str,
+    sql,
+    output,
+    layer_name = NULL,
+    tile_format = "mlt",
+    min_zoom = 0L,
+    max_zoom = 14L,
+    base_zoom = NULL,
+    drop_rate = NULL,
+    cluster_distance = NULL,
+    cluster_maxzoom = NULL,
+    coalesce = FALSE,
+    simplification = TRUE,
+    overwrite = TRUE,
+    quiet = FALSE,
+    batch_size = NULL,
+    geom_column = NULL
+) {
+  tile_format <- match.arg(tile_format, c("mlt", "mvt"))
+
+  output <- normalizePath(output, mustWork = FALSE)
+
+  if (file.exists(output)) {
+    if (overwrite) {
+      unlink(output)
+    } else {
+      stop("Output file already exists. Set `overwrite = TRUE` to replace it.",
+        call. = FALSE)
+    }
+  }
+
+  if (is.null(layer_name)) {
+    layer_name <- tools::file_path_sans_ext(basename(output))
+  }
+
+  result <- rust_freestile_postgis(
+    conn_str = conn_str,
+    sql = sql,
+    output_path = output,
+    layer_name = layer_name,
+    tile_format = tile_format,
+    min_zoom = as.integer(min_zoom),
+    max_zoom = as.integer(max_zoom),
+    base_zoom = if (is.null(base_zoom)) -1L else as.integer(base_zoom),
+    do_simplify = simplification,
+    drop_rate = if (is.null(drop_rate)) -1.0 else as.double(drop_rate),
+    cluster_distance = if (is.null(cluster_distance)) -1.0 else as.double(cluster_distance),
+    cluster_maxzoom = if (is.null(cluster_maxzoom)) -1L else as.integer(cluster_maxzoom),
+    do_coalesce = coalesce,
+    quiet = quiet,
+    geom_column = if (is.null(geom_column)) "" else geom_column
+  )
+
+  if (startsWith(result, "Error:")) {
+    stop(result, call. = FALSE)
+  }
+
+  if (!quiet) {
+    size <- file.info(output)$size
+    message(sprintf("Created %s (%s)", output, .format_size(size)))
+  }
+
+  invisible(output)
+}
+
+#' Create vector tiles from a PostGIS query and write to MongoDB
+#'
+#' Reads spatial data from PostgreSQL/PostGIS and writes vector tiles
+#' directly to a MongoDB collection. Each tile is stored as a document
+#' with fields \code{z}, \code{x}, \code{y}, and \code{d} (compressed tile data).
+#'
+#' @param conn_str Character. PostgreSQL connection string.
+#' @param sql Character. SQL query that returns a geometry column.
+#' @param mongo_uri Character. MongoDB connection URI.
+#' @param mongo_db Character. MongoDB database name.
+#' @param mongo_collection Character. MongoDB collection name.
+#' @param layer_name Character. Name for the tile layer.
+#' @param tile_format Character. \code{"mlt"} (default) or \code{"mvt"}.
+#' @param min_zoom Integer. Minimum zoom level (default 0).
+#' @param max_zoom Integer. Maximum zoom level (default 14).
+#' @param base_zoom Integer. Base zoom level. NULL (default) uses max_zoom.
+#' @param drop_rate Numeric. Exponential drop rate. NULL disables.
+#' @param cluster_distance Numeric. Pixel distance for clustering. NULL disables.
+#' @param cluster_maxzoom Integer. Max zoom for clustering. Default max_zoom - 1.
+#' @param coalesce Logical. Whether to merge features (default FALSE).
+#' @param simplification Logical. Whether to simplify geometries (default TRUE).
+#' @param quiet Logical. Whether to suppress progress (default FALSE).
+#' @param batch_size Integer. Batch size for cursor reading. NULL loads all at once.
+#' @param upsert Logical. Whether to use upsert mode (replace existing tiles at
+#'   same coordinates) instead of insert (default FALSE).
+#'
+#' @return A character string with the write result.
+#'
+#' @examples
+#' \dontrun{
+#' freestile_postgis_to_mongo(
+#'   "postgresql://user:pass@localhost:5432/gis_db",
+#'   "SELECT geom, name FROM cities",
+#'   mongo_uri = "mongodb://localhost:27017",
+#'   mongo_db = "tiles",
+#'   mongo_collection = "cities"
+#' )
+#' }
+#'
+#' @export
+freestile_postgis_to_mongo <- function(
+    conn_str,
+    sql,
+    mongo_uri,
+    mongo_db,
+    mongo_collection,
+    layer_name = "default",
+    tile_format = "mlt",
+    min_zoom = 0L,
+    max_zoom = 14L,
+    base_zoom = NULL,
+    drop_rate = NULL,
+    cluster_distance = NULL,
+    cluster_maxzoom = NULL,
+    coalesce = FALSE,
+    simplification = TRUE,
+    quiet = FALSE,
+    batch_size = NULL,
+    upsert = FALSE,
+    geom_column = NULL
+) {
+  tile_format <- match.arg(tile_format, c("mlt", "mvt"))
+
+  result <- rust_freestile_postgis_to_mongo(
+    conn_str = conn_str,
+    sql = sql,
+    mongo_uri = mongo_uri,
+    mongo_db = mongo_db,
+    mongo_collection = mongo_collection,
+    layer_name = layer_name,
+    tile_format = tile_format,
+    min_zoom = as.integer(min_zoom),
+    max_zoom = as.integer(max_zoom),
+    base_zoom = if (is.null(base_zoom)) -1L else as.integer(base_zoom),
+    do_simplify = simplification,
+    drop_rate = if (is.null(drop_rate)) -1.0 else as.double(drop_rate),
+    cluster_distance = if (is.null(cluster_distance)) -1.0 else as.double(cluster_distance),
+    cluster_maxzoom = if (is.null(cluster_maxzoom)) -1L else as.integer(cluster_maxzoom),
+    do_coalesce = coalesce,
+    quiet = quiet,
+    batch_size = if (is.null(batch_size)) 0L else as.integer(batch_size),
+    upsert = upsert,
+    geom_column = if (is.null(geom_column)) "" else geom_column
+  )
+
+  if (startsWith(result, "Error:")) {
+    stop(result, call. = FALSE)
+  }
+
+  invisible(result)
+}

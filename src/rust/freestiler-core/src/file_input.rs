@@ -9,22 +9,7 @@ use crate::tiler::{Feature, Geometry, LayerData, PropertyValue};
 // Shared WKB → Geometry conversion (used by both geoparquet and duckdb)
 // ---------------------------------------------------------------------------
 
-#[cfg(any(feature = "geoparquet", feature = "duckdb"))]
-fn wkb_to_geometry(wkb_bytes: &[u8]) -> Option<Geometry> {
-    use geozero::wkb::Wkb;
-    use geozero::ToGeo;
 
-    let geo_geom = Wkb(wkb_bytes).to_geo().ok()?;
-    match geo_geom {
-        geo_types::Geometry::Point(p) => Some(Geometry::Point(p)),
-        geo_types::Geometry::MultiPoint(mp) => Some(Geometry::MultiPoint(mp)),
-        geo_types::Geometry::LineString(ls) => Some(Geometry::LineString(ls)),
-        geo_types::Geometry::MultiLineString(mls) => Some(Geometry::MultiLineString(mls)),
-        geo_types::Geometry::Polygon(p) => Some(Geometry::Polygon(p)),
-        geo_types::Geometry::MultiPolygon(mp) => Some(Geometry::MultiPolygon(mp)),
-        _ => None,
-    }
-}
 
 // ---------------------------------------------------------------------------
 // GeoParquet input
@@ -239,7 +224,7 @@ mod geoparquet_impl {
             DataType::LargeBinary => Some(col.as_binary::<i64>().value(row)),
             _ => None,
         };
-        wkb_bytes.and_then(wkb_to_geometry)
+        wkb_bytes.and_then(crate::wkb::wkb_to_geometry)
     }
 
     fn extract_property_value(col: &dyn Array, row: usize) -> PropertyValue {
@@ -450,7 +435,7 @@ mod duckdb_impl {
                 .get(wkb_col_idx)
                 .map_err(|e| format!("WKB read error: {}", e))?;
 
-            let geometry = match wkb_to_geometry(&wkb_bytes) {
+            let geometry = match crate::wkb::wkb_to_geometry(&wkb_bytes) {
                 Some(g) => g,
                 None => continue,
             };

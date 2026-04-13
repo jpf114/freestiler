@@ -4,7 +4,6 @@ use std::io::{Read, Seek, SeekFrom};
 use std::time::Instant;
 
 use freestiler_core::engine::{self, ProgressReporter, TileConfig};
-use freestiler_core::pmtiles_writer::TileFormat;
 use freestiler_core::tiler::{Feature, Geometry, LayerData, PropertyValue};
 
 // R console flush (Rprintf output is buffered; flush to show progress immediately)
@@ -86,36 +85,10 @@ fn rust_freestile(
         return "Error: No valid features to tile".to_string();
     }
 
-    let config = TileConfig {
-        tile_format: match tile_format {
-            "mlt" => TileFormat::Mlt,
-            _ => TileFormat::Mvt,
-        },
-        min_zoom: global_min_zoom as u8,
-        max_zoom: global_max_zoom as u8,
-        base_zoom: if base_zoom < 0 {
-            None
-        } else {
-            Some(base_zoom as u8)
-        },
-        simplification: do_simplify,
-        drop_rate: if drop_rate > 0.0 {
-            Some(drop_rate)
-        } else {
-            None
-        },
-        cluster_distance: if cluster_distance > 0.0 {
-            Some(cluster_distance)
-        } else {
-            None
-        },
-        cluster_maxzoom: if cluster_maxzoom >= 0 {
-            Some(cluster_maxzoom as u8)
-        } else {
-            None
-        },
-        coalesce: do_coalesce,
-    };
+    let config = TileConfig::from_binding_params(
+        tile_format, global_min_zoom as u8, global_max_zoom as u8,
+        base_zoom, do_simplify, drop_rate, cluster_distance, cluster_maxzoom, do_coalesce,
+    );
 
     match engine::generate_pmtiles(&layer_data, output_path, &config, reporter.as_ref()) {
         Ok(()) => output_path.to_string(),
@@ -679,36 +652,10 @@ fn rust_freestile_file(
             reporter.report(&format!("  Read {} features from {}", total, input_path));
         }
 
-        let config = TileConfig {
-            tile_format: match tile_format {
-                "mlt" => TileFormat::Mlt,
-                _ => TileFormat::Mvt,
-            },
-            min_zoom: min_zoom as u8,
-            max_zoom: max_zoom as u8,
-            base_zoom: if base_zoom < 0 {
-                None
-            } else {
-                Some(base_zoom as u8)
-            },
-            simplification: do_simplify,
-            drop_rate: if drop_rate > 0.0 {
-                Some(drop_rate)
-            } else {
-                None
-            },
-            cluster_distance: if cluster_distance > 0.0 {
-                Some(cluster_distance)
-            } else {
-                None
-            },
-            cluster_maxzoom: if cluster_maxzoom >= 0 {
-                Some(cluster_maxzoom as u8)
-            } else {
-                None
-            },
-            coalesce: do_coalesce,
-        };
+        let config = TileConfig::from_binding_params(
+            tile_format, min_zoom as u8, max_zoom as u8,
+            base_zoom, do_simplify, drop_rate, cluster_distance, cluster_maxzoom, do_coalesce,
+        );
 
         match engine::generate_pmtiles(&layers, output_path, &config, reporter.as_ref()) {
             Ok(()) => output_path.to_string(),
@@ -792,36 +739,10 @@ fn rust_freestile_duckdb(
             reporter.report(&format!("  Read {} features from {}", total, input_path));
         }
 
-        let config = TileConfig {
-            tile_format: match tile_format {
-                "mlt" => TileFormat::Mlt,
-                _ => TileFormat::Mvt,
-            },
-            min_zoom: min_zoom as u8,
-            max_zoom: max_zoom as u8,
-            base_zoom: if base_zoom < 0 {
-                None
-            } else {
-                Some(base_zoom as u8)
-            },
-            simplification: do_simplify,
-            drop_rate: if drop_rate > 0.0 {
-                Some(drop_rate)
-            } else {
-                None
-            },
-            cluster_distance: if cluster_distance > 0.0 {
-                Some(cluster_distance)
-            } else {
-                None
-            },
-            cluster_maxzoom: if cluster_maxzoom >= 0 {
-                Some(cluster_maxzoom as u8)
-            } else {
-                None
-            },
-            coalesce: do_coalesce,
-        };
+        let config = TileConfig::from_binding_params(
+            tile_format, min_zoom as u8, max_zoom as u8,
+            base_zoom, do_simplify, drop_rate, cluster_distance, cluster_maxzoom, do_coalesce,
+        );
 
         match engine::generate_pmtiles(&layers, output_path, &config, reporter.as_ref()) {
             Ok(()) => output_path.to_string(),
@@ -901,36 +822,10 @@ fn rust_freestile_duckdb_query(
         } else {
             Some(db_path)
         };
-        let config = TileConfig {
-            tile_format: match tile_format {
-                "mlt" => TileFormat::Mlt,
-                _ => TileFormat::Mvt,
-            },
-            min_zoom: min_zoom as u8,
-            max_zoom: max_zoom as u8,
-            base_zoom: if base_zoom < 0 {
-                None
-            } else {
-                Some(base_zoom as u8)
-            },
-            simplification: do_simplify,
-            drop_rate: if drop_rate > 0.0 {
-                Some(drop_rate)
-            } else {
-                None
-            },
-            cluster_distance: if cluster_distance > 0.0 {
-                Some(cluster_distance)
-            } else {
-                None
-            },
-            cluster_maxzoom: if cluster_maxzoom >= 0 {
-                Some(cluster_maxzoom as u8)
-            } else {
-                None
-            },
-            coalesce: do_coalesce,
-        };
+        let config = TileConfig::from_binding_params(
+            tile_format, min_zoom as u8, max_zoom as u8,
+            base_zoom, do_simplify, drop_rate, cluster_distance, cluster_maxzoom, do_coalesce,
+        );
 
         let maybe_stream = match streaming_mode {
             "always" => true,
@@ -985,6 +880,101 @@ fn rust_freestile_duckdb_query(
         match engine::generate_pmtiles(&layers, output_path, &config, reporter.as_ref()) {
             Ok(()) => output_path.to_string(),
             Err(e) => format!("Error: {}", e),
+        }
+    }
+}
+
+/// Create tiles from a PostGIS query (requires postgis feature)
+/// @param conn_str PostgreSQL connection string (e.g. "postgresql://user:pass@host:5432/db")
+/// @param sql SQL query that returns a geometry column
+/// @param output_path Path for output .pmtiles file
+/// @param layer_name Layer name
+/// @param tile_format "mvt" or "mlt"
+/// @param min_zoom Minimum zoom level
+/// @param max_zoom Maximum zoom level
+/// @param base_zoom Base zoom level (negative = use max_zoom)
+/// @param do_simplify Whether to simplify geometries
+/// @param drop_rate Exponential drop rate (negative = off)
+/// @param cluster_distance Pixel distance for clustering (negative = off)
+/// @param cluster_maxzoom Max zoom for clustering (negative = use max_zoom - 1)
+/// @param do_coalesce Whether to coalesce features
+/// @param quiet Whether to suppress progress
+/// @param geom_column Name of geometry column (empty = auto-detect)
+/// @export
+#[extendr]
+fn rust_freestile_postgis(
+    conn_str: &str,
+    sql: &str,
+    output_path: &str,
+    layer_name: &str,
+    tile_format: &str,
+    min_zoom: i32,
+    max_zoom: i32,
+    base_zoom: i32,
+    do_simplify: bool,
+    drop_rate: f64,
+    cluster_distance: f64,
+    cluster_maxzoom: i32,
+    do_coalesce: bool,
+    quiet: bool,
+    geom_column: &str,
+) -> String {
+    #[cfg(not(feature = "postgis"))]
+    {
+        let _ = (
+            conn_str, sql, output_path, layer_name, tile_format,
+            min_zoom, max_zoom, base_zoom, do_simplify, drop_rate,
+            cluster_distance, cluster_maxzoom, do_coalesce, quiet, geom_column,
+        );
+        return "Error: PostGIS support not compiled. Rebuild with postgis feature enabled."
+            .to_string();
+    }
+
+    #[cfg(feature = "postgis")]
+    {
+        let reporter: Box<dyn ProgressReporter> = if quiet {
+            Box::new(engine::SilentReporter)
+        } else {
+            Box::new(RReporter)
+        };
+
+        let output = freestiler_core::OutputTarget::Pmtiles {
+            path: output_path.to_string(),
+        };
+
+        if !quiet {
+            reporter.report(&format!("  Connecting to PostGIS: {}",
+                freestiler_core::tiler::mask_conn_str(conn_str)));
+        }
+
+        let geom_col = if geom_column.is_empty() { None } else { Some(geom_column) };
+
+        let layers = match freestiler_core::postgis_input::postgis_query_to_layers_with_geom(
+            conn_str,
+            sql,
+            layer_name,
+            min_zoom as u8,
+            max_zoom as u8,
+            None,
+            geom_col,
+        ) {
+            Ok(l) => l,
+            Err(e) => return format!("Error: {}", freestiler_core::tiler::mask_conn_str(&e)),
+        };
+
+        if !quiet {
+            let total: usize = layers.iter().map(|l| l.features.len()).sum();
+            reporter.report(&format!("  Query returned {} features", total));
+        }
+
+        let config = TileConfig::from_binding_params(
+            tile_format, min_zoom as u8, max_zoom as u8,
+            base_zoom, do_simplify, drop_rate, cluster_distance, cluster_maxzoom, do_coalesce,
+        );
+
+        match engine::generate_tiles_to_target(&layers, &output, &config, reporter.as_ref()) {
+            Ok(count) => format!("{} tiles written to {}", count, output_path),
+            Err(e) => format!("Error: {}", freestiler_core::tiler::mask_conn_str(&e)),
         }
     }
 }
@@ -1067,11 +1057,126 @@ fn rust_pmtiles_metadata(path: &str) -> String {
     serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string())
 }
 
+
+/// Create tiles from a PostGIS query and write to MongoDB
+///
+/// @param conn_str PostgreSQL connection string
+/// @param sql SQL query that returns a geometry column
+/// @param mongo_uri MongoDB connection URI
+/// @param mongo_db MongoDB database name
+/// @param mongo_collection MongoDB collection name
+/// @param layer_name Layer name
+/// @param tile_format "mvt" or "mlt"
+/// @param min_zoom Minimum zoom level
+/// @param max_zoom Maximum zoom level
+/// @param base_zoom Base zoom level (negative = use max_zoom)
+/// @param do_simplify Whether to simplify geometries
+/// @param drop_rate Exponential drop rate (negative = off)
+/// @param cluster_distance Pixel distance for clustering (negative = off)
+/// @param cluster_maxzoom Max zoom for clustering (negative = use max_zoom - 1)
+/// @param do_coalesce Whether to coalesce features
+/// @param quiet Whether to suppress progress
+/// @param batch_size Batch size for cursor-based reading (0 = no cursor)
+/// @param upsert Whether to use upsert mode for MongoDB writes
+/// @param geom_column Name of geometry column (empty = auto-detect)
+/// @export
+#[extendr]
+fn rust_freestile_postgis_to_mongo(
+    conn_str: &str,
+    sql: &str,
+    mongo_uri: &str,
+    mongo_db: &str,
+    mongo_collection: &str,
+    layer_name: &str,
+    tile_format: &str,
+    min_zoom: i32,
+    max_zoom: i32,
+    base_zoom: i32,
+    do_simplify: bool,
+    drop_rate: f64,
+    cluster_distance: f64,
+    cluster_maxzoom: i32,
+    do_coalesce: bool,
+    quiet: bool,
+    batch_size: i32,
+    upsert: bool,
+    geom_column: &str,
+) -> String {
+    #[cfg(not(all(feature = "postgis", feature = "mongodb-out")))]
+    {
+        let _ = (
+            conn_str, sql, mongo_uri, mongo_db, mongo_collection,
+            layer_name, tile_format, min_zoom, max_zoom, base_zoom,
+            do_simplify, drop_rate, cluster_distance, cluster_maxzoom,
+            do_coalesce, quiet, batch_size, upsert, geom_column,
+        );
+        return "Error: PostGIS + MongoDB support not compiled. Rebuild with both features enabled."
+            .to_string();
+    }
+
+    #[cfg(all(feature = "postgis", feature = "mongodb-out"))]
+    {
+        let reporter: Box<dyn ProgressReporter> = if quiet {
+            Box::new(engine::SilentReporter)
+        } else {
+            Box::new(RReporter)
+        };
+
+        let mongo_config = freestiler_core::MongoConfig::new(mongo_uri, mongo_db, mongo_collection)
+            .compress(true)
+            .create_indexes(true)
+            .upsert(upsert);
+
+        let output = freestiler_core::OutputTarget::MongoDB {
+            config: mongo_config,
+        };
+
+        if !quiet {
+            reporter.report("  Connecting to PostGIS...");
+        }
+
+        let batch = if batch_size > 0 { Some(batch_size as usize) } else { None };
+        let geom_col = if geom_column.is_empty() { None } else { Some(geom_column) };
+
+        let layers = match freestiler_core::postgis_input::postgis_query_to_layers_with_geom(
+            conn_str,
+            sql,
+            layer_name,
+            min_zoom as u8,
+            max_zoom as u8,
+            batch,
+            geom_col,
+        ) {
+            Ok(l) => l,
+            Err(e) => return format!("Error: {}", freestiler_core::tiler::mask_conn_str(&e)),
+        };
+
+        if !quiet {
+            let total: usize = layers.iter().map(|l| l.features.len()).sum();
+            reporter.report(&format!("  Query returned {} features", total));
+        }
+
+        let config = TileConfig::from_binding_params(
+            tile_format, min_zoom as u8, max_zoom as u8,
+            base_zoom, do_simplify, drop_rate, cluster_distance, cluster_maxzoom, do_coalesce,
+        );
+
+        match engine::generate_tiles_to_target(&layers, &output, &config, reporter.as_ref()) {
+            Ok(count) => format!("{} tiles written to MongoDB", count),
+            Err(e) => format!("Error: {}", freestiler_core::tiler::mask_conn_str(&e)),
+        }
+    }
+}
+
+
+
 extendr_module! {
     mod freestiler;
     fn rust_freestile;
     fn rust_freestile_file;
     fn rust_freestile_duckdb;
     fn rust_freestile_duckdb_query;
+    fn rust_freestile_postgis;
+    fn rust_freestile_postgis_to_mongo;
     fn rust_pmtiles_metadata;
 }

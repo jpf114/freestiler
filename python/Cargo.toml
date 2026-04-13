@@ -17,12 +17,15 @@ crate-type = ["cdylib"]
 default = ["geoparquet", "duckdb"]
 geoparquet = ["freestiler-core/geoparquet"]
 duckdb = ["freestiler-core/duckdb"]
+postgis = ["freestiler-core/postgis"]
+mongodb-out = ["freestiler-core/mongodb-out"]
 fastpfor = ["freestiler-core/fastpfor"]
 fsst = ["freestiler-core/fsst"]
 
 [dependencies]
 pyo3 = { version = "0.27", features = ["extension-module"] }
 freestiler-core = { path = "../src/rust/freestiler-core" }
+env_logger = "0.11"
 
 # Needed directly for WKB parsing and geometry type conversion
 geo-types = "0.7"

@@ -11,6 +11,8 @@ name = "freestiler"
 default = []
 geoparquet = ["freestiler-core/geoparquet"]
 duckdb = ["freestiler-core/duckdb"]
+postgis = ["freestiler-core/postgis"]
+mongodb-out = ["freestiler-core/mongodb-out"]
 fastpfor = ["freestiler-core/fastpfor"]
 fsst = ["freestiler-core/fsst"]
 

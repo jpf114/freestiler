@@ -34,6 +34,20 @@ try:
 except ImportError:
     _HAS_DUCKDB = False
 
+try:
+    from freestiler._freestiler import _freestile_postgis as _freestile_postgis_rs
+
+    _HAS_POSTGIS = True
+except ImportError:
+    _HAS_POSTGIS = False
+
+try:
+    from freestiler._freestiler import _freestile_postgis_to_mongo as _freestile_postgis_to_mongo_rs
+
+    _HAS_POSTGIS_MONGO = True
+except ImportError:
+    _HAS_POSTGIS_MONGO = False
+
 
 @dataclass
 class FreestileLayer:
@@ -624,10 +638,181 @@ def freestile_query(
     return output
 
 
+def freestile_postgis(
+    conn_str: str,
+    sql: str,
+    output: Union[str, Path, dict],
+    *,
+    layer_name: str | None = None,
+    tile_format: str = "mlt",
+    min_zoom: int = 0,
+    max_zoom: int = 14,
+    base_zoom: int | None = None,
+    drop_rate: float | None = None,
+    cluster_distance: float | None = None,
+    cluster_maxzoom: int | None = None,
+    coalesce: bool = False,
+    simplification: bool = True,
+    overwrite: bool = True,
+    quiet: bool = False,
+    batch_size: int | None = None,
+    upsert: bool = False,
+    geom_column: str | None = None,
+) -> Union[Path, dict]:
+    """Create tiles from a PostGIS database query.
+
+    Reads spatial data from a PostgreSQL/PostGIS database and generates
+    vector tiles. Output can be a PMTiles file or a MongoDB collection.
+
+    Parameters
+    ----------
+    conn_str : str
+        PostgreSQL connection string, e.g.
+        ``"postgresql://user:pass@host:5432/dbname"``.
+    sql : str
+        SQL query that returns a geometry column.
+    output : str, Path, or dict
+        Output destination. If a string/Path, writes a PMTiles file.
+        If a dict with keys ``"uri"``, ``"database"``, ``"collection"``,
+        writes to MongoDB.
+    layer_name : str, optional
+        Name for the tile layer. If None, derived from the output filename.
+    tile_format : str
+        Tile encoding format: "mlt" (default) or "mvt".
+    min_zoom : int
+        Minimum zoom level (default 0).
+    max_zoom : int
+        Maximum zoom level (default 14).
+    base_zoom : int, optional
+        Zoom level at and above which ALL features are kept. None defaults
+        to max_zoom.
+    drop_rate : float, optional
+        Exponential drop rate for feature thinning. None disables.
+    cluster_distance : float, optional
+        Pixel distance for point clustering. None disables.
+    cluster_maxzoom : int, optional
+        Maximum zoom level for clustering. Default is max_zoom - 1.
+    coalesce : bool
+        Whether to merge features with identical attributes (default False).
+    simplification : bool
+        Whether to snap geometries to the tile pixel grid (default True).
+    overwrite : bool
+        Whether to overwrite existing output file (default True).
+    quiet : bool
+        Whether to suppress progress messages (default False).
+    batch_size : int, optional
+        Batch size for cursor-based reading from PostGIS. Default is 10000.
+    upsert : bool
+        For MongoDB output, use upsert mode to replace existing tiles at
+        the same (z,x,y) coordinates (default False).
+    geom_column : str, optional
+        Name of the geometry column to use. If None, auto-detected.
+
+    Returns
+    -------
+    Path or dict
+        The output file path (for PMTiles) or a dict with write statistics
+        (for MongoDB).
+
+    Raises
+    ------
+    RuntimeError
+        If PostGIS support was not compiled.
+    ValueError
+        If the output config format is invalid.
+    """
+    if tile_format not in ("mlt", "mvt"):
+        raise ValueError(f"tile_format must be 'mlt' or 'mvt', got '{tile_format}'")
+
+    if not _HAS_POSTGIS:
+        raise RuntimeError(
+            "freestiler was installed without PostGIS support. "
+            "Rebuild from source with the 'postgis' feature enabled."
+        )
+
+    if isinstance(output, dict):
+        mongo_uri = output.get("uri", "")
+        mongo_db = output.get("database", "")
+        mongo_coll = output.get("collection", "")
+        if not mongo_uri or not mongo_db or not mongo_coll:
+            raise ValueError(
+                "MongoDB output dict must contain 'uri', 'database', and 'collection' keys."
+            )
+
+        if not _HAS_POSTGIS_MONGO:
+            raise RuntimeError(
+                "freestiler was installed without PostGIS + MongoDB support. "
+                "Rebuild from source with both 'postgis' and 'mongodb-out' features enabled."
+            )
+
+        result = _freestile_postgis_to_mongo_rs(
+            conn_str=conn_str,
+            sql=sql,
+            mongo_uri=mongo_uri,
+            mongo_db=mongo_db,
+            mongo_collection=mongo_coll,
+            layer_name=layer_name or "default",
+            tile_format=tile_format,
+            min_zoom=min_zoom,
+            max_zoom=max_zoom,
+            base_zoom=base_zoom if base_zoom is not None else -1,
+            do_simplify=simplification,
+            quiet=quiet,
+            drop_rate=drop_rate if drop_rate is not None else -1.0,
+            cluster_distance=cluster_distance if cluster_distance is not None else -1.0,
+            cluster_maxzoom=cluster_maxzoom if cluster_maxzoom is not None else -1,
+            do_coalesce=coalesce,
+            batch_size=batch_size,
+            upsert=upsert,
+            geom_column=geom_column,
+        )
+        return {"status": "ok", "result": result}
+    else:
+        output_path = Path(output).resolve()
+
+        if output_path.exists():
+            if overwrite:
+                output_path.unlink()
+            else:
+                raise FileExistsError(
+                    f"Output file already exists: {output_path}. Set overwrite=True to replace."
+                )
+
+        if layer_name is None:
+            layer_name = output_path.stem
+
+        _freestile_postgis_rs(
+            conn_str=conn_str,
+            sql=sql,
+            output_path=str(output_path),
+            layer_name=layer_name,
+            tile_format=tile_format,
+            min_zoom=min_zoom,
+            max_zoom=max_zoom,
+            base_zoom=base_zoom if base_zoom is not None else -1,
+            do_simplify=simplification,
+            quiet=quiet,
+            drop_rate=drop_rate if drop_rate is not None else -1.0,
+            cluster_distance=cluster_distance if cluster_distance is not None else -1.0,
+            cluster_maxzoom=cluster_maxzoom if cluster_maxzoom is not None else -1,
+            do_coalesce=coalesce,
+            batch_size=batch_size,
+            geom_column=geom_column,
+        )
+
+        if not quiet:
+            size = output_path.stat().st_size
+            print(f"Created {output_path} ({_format_size(size)})")
+
+        return output_path
+
+
 __all__ = [
     "freestile",
     "freestile_file",
     "freestile_layer",
     "freestile_query",
+    "freestile_postgis",
     "FreestileLayer",
 ]
+

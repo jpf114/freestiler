@@ -193,3 +193,19 @@ pub fn assign_features_to_tiles_with_geoms(
 
     tile_map
 }
+
+/// Mask password in a connection URL/URI for safe display in logs.
+/// Supports strings matching `protocol://user:password@host...`
+pub fn mask_conn_str(s: &str) -> String {
+    if let Some(at_pos) = s.find('@') {
+        if let Some(colon_pos) = s[..at_pos].rfind(':') {
+            if s[..colon_pos].contains("://") {
+                let prefix = &s[..colon_pos + 1];
+                let suffix = &s[at_pos..];
+                return format!("{}***{}", prefix, suffix);
+            }
+        }
+    }
+    s.to_string()
+}
+
