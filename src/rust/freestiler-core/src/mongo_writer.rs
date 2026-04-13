@@ -1,11 +1,12 @@
 //! MongoDB output writer: store tile data as {z, x, y, d} documents.
 //!
 //! Supports:
-//! - Batched insert and bulk upsert modes
+//! - Batched insert and bulk upsert modes (using bulk_write API for MongoDB 3.6+)
 //! - Automatic gzip compression of tile data
 //! - Automatic index creation on (z, x, y)
 //! - Exponential-backoff retry for transient errors
 //! - Connection string masking in logs
+//! - TLS/SSL connection support
 
 #[cfg(feature = "mongodb-out")]
 mod mongo_impl {
@@ -21,6 +22,7 @@ mod mongo_impl {
     const DEFAULT_BATCH_SIZE: usize = 1000;
     const DEFAULT_MAX_RETRIES: u32 = 3;
     const RETRY_BASE_DELAY_MS: u64 = 100;
+    const BULK_WRITE_BATCH_SIZE: usize = 100;
 
     const TRANSIENT_ERROR_CODES: &[i32] = &[
         6,    // HostUnreachable
@@ -61,6 +63,9 @@ mod mongo_impl {
         pub max_retries: Option<u32>,
         pub index_fail_is_error: Option<bool>,
         pub connect_timeout_ms: Option<u64>,
+        pub use_tls: Option<bool>,
+        pub tls_ca_file: Option<String>,
+        pub tls_allow_invalid: Option<bool>,
     }
 
     impl MongoConfig {
@@ -81,6 +86,9 @@ mod mongo_impl {
         pub fn max_retries(mut self, v: u32) -> Self { self.max_retries = Some(v); self }
         pub fn index_fail_is_error(mut self, v: bool) -> Self { self.index_fail_is_error = Some(v); self }
         pub fn connect_timeout_ms(mut self, v: u64) -> Self { self.connect_timeout_ms = Some(v); self }
+        pub fn use_tls(mut self, v: bool) -> Self { self.use_tls = Some(v); self }
+        pub fn tls_ca_file(mut self, v: impl Into<String>) -> Self { self.tls_ca_file = Some(v.into()); self }
+        pub fn tls_allow_invalid(mut self, v: bool) -> Self { self.tls_allow_invalid = Some(v); self }
 
         pub fn effective_batch_size(&self) -> usize { self.batch_size.unwrap_or(DEFAULT_BATCH_SIZE) }
         pub fn effective_compress(&self) -> bool { self.compress.unwrap_or(true) }
@@ -89,6 +97,8 @@ mod mongo_impl {
         pub fn effective_ordered(&self) -> bool { self.ordered.unwrap_or(false) }
         pub fn effective_max_retries(&self) -> u32 { self.max_retries.unwrap_or(DEFAULT_MAX_RETRIES) }
         pub fn effective_index_fail_is_error(&self) -> bool { self.index_fail_is_error.unwrap_or(false) }
+        pub fn effective_use_tls(&self) -> bool { self.use_tls.unwrap_or(false) }
+        pub fn effective_tls_allow_invalid(&self) -> bool { self.tls_allow_invalid.unwrap_or(false) }
     }
 
     #[derive(Debug, Default)]
@@ -118,6 +128,16 @@ mod mongo_impl {
                 if let Some(timeout_ms) = config.connect_timeout_ms {
                     options.connect_timeout = Some(std::time::Duration::from_millis(timeout_ms));
                     options.server_selection_timeout = Some(std::time::Duration::from_millis(timeout_ms));
+                }
+
+                if config.effective_use_tls() {
+                    options.tls = Some(true);
+                    if let Some(ref ca_file) = config.tls_ca_file {
+                        options.tls_ca_file_path = Some(std::path::PathBuf::from(ca_file));
+                    }
+                    if config.effective_tls_allow_invalid() {
+                        options.tls_allow_invalid_certificates = Some(true);
+                    }
                 }
 
                 Client::with_options(options)
@@ -187,50 +207,9 @@ mod mongo_impl {
                 if docs.is_empty() { continue; }
 
                 if upsert_mode {
-                    let mut batch_upserted: u64 = 0;
-                    let mut batch_modified: u64 = 0;
-
-                    for doc in &docs {
-                        let z = doc.get_i32("z").unwrap_or(0);
-                        let x = doc.get_i32("x").unwrap_or(0);
-                        let y = doc.get_i32("y").unwrap_or(0);
-
-                        let mut attempt = 0u32;
-                        loop {
-                            match collection.update_one(
-                                doc! { "z": z, "x": x, "y": y },
-                                doc! { "$set": doc.clone() },
-                            ).upsert(true).await {
-                                Ok(result) => {
-                                    if result.upserted_id.is_some() {
-                                        batch_upserted += 1;
-                                    }
-                                    if result.modified_count > 0 {
-                                        batch_modified += result.modified_count;
-                                    }
-                                    break;
-                                }
-                                Err(e) => {
-                                    if attempt < max_retries && is_transient_error(&e) {
-                                        let delay = std::time::Duration::from_millis(
-                                            RETRY_BASE_DELAY_MS * 2u64.pow(attempt));
-                                        warn!("MongoDB update_one retry ({}/{}): {}",
-                                            attempt + 1, max_retries, e);
-                                        tokio::time::sleep(delay).await;
-                                        attempt += 1;
-                                    } else {
-                                        warn!("MongoDB update_one failed for z={} x={} y={}: {}",
-                                            z, x, y, e);
-                                        total_failed += 1;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    total_upserted += batch_upserted;
-                    total_written += batch_upserted + batch_modified;
+                    let result = self.bulk_upsert_with_retry(&collection, &docs, max_retries).await?;
+                    total_upserted += result.upserted;
+                    total_written += result.upserted + result.modified;
                     total_bytes += batch_bytes;
                 } else {
                     let insert_options = InsertManyOptions::builder()
@@ -275,6 +254,68 @@ mod mongo_impl {
             Ok(MongoWriteResult { tiles_written: total_written, tiles_upserted: total_upserted, tiles_failed: total_failed, bytes_written: total_bytes })
         }
 
+        async fn bulk_upsert_with_retry(
+            &self,
+            collection: &mongodb::Collection<bson::Document>,
+            docs: &[bson::Document],
+            max_retries: u32,
+        ) -> Result<BulkUpsertResult, String> {
+            use mongodb::options::WriteOptions;
+
+            let mut total_upserted: u64 = 0;
+            let mut total_modified: u64 = 0;
+
+            for chunk in docs.chunks(BULK_WRITE_BATCH_SIZE) {
+                let models: Vec<mongodb::operations::WriteModel> = chunk.iter().map(|doc| {
+                    let z = doc.get_i32("z").unwrap_or(0);
+                    let x = doc.get_i32("x").unwrap_or(0);
+                    let y = doc.get_i32("y").unwrap_or(0);
+                    mongodb::operations::WriteModel::UpdateOne {
+                        filter: doc! { "z": z, "x": x, "y": y },
+                        update: mongodb::operations::UpdateModifications::Document(
+                            doc! { "$set": doc.clone() }
+                        ),
+                        options: Some(mongodb::options::UpdateOptions {
+                            upsert: Some(true),
+                            ..Default::default()
+                        }),
+                        collation: None,
+                        array_filters: None,
+                        hint: None,
+                    }
+                }).collect();
+
+                let write_options = WriteOptions::builder()
+                    .ordered(false)
+                    .build();
+
+                let mut attempt = 0u32;
+                loop {
+                    match collection.bulk_write(models.clone()).with_options(write_options.clone()).await {
+                        Ok(result) => {
+                            total_upserted += result.upserted_count;
+                            total_modified += result.modified_count;
+                            break;
+                        }
+                        Err(e) => {
+                            if attempt < max_retries && is_transient_error(&e) {
+                                let delay = std::time::Duration::from_millis(
+                                    RETRY_BASE_DELAY_MS * 2u64.pow(attempt));
+                                warn!("MongoDB bulk_write retry ({}/{}): {}",
+                                    attempt + 1, max_retries, e);
+                                tokio::time::sleep(delay).await;
+                                attempt += 1;
+                            } else {
+                                return Err(format!("MongoDB bulk_write error: {}", e));
+                            }
+                        }
+                    }
+                }
+            }
+
+            Ok(BulkUpsertResult { upserted: total_upserted, modified: total_modified })
+        }
+
         pub fn ensure_indexes(&self) -> Result<(), String> {
             self.with_runtime(self.ensure_indexes_async())
         }
@@ -305,6 +346,11 @@ mod mongo_impl {
                     .map_err(|e| format!("Cannot count documents: {}", e))
             })
         }
+    }
+
+    struct BulkUpsertResult {
+        upserted: u64,
+        modified: u64,
     }
 
     fn is_transient_error(error: &mongodb::error::Error) -> bool {
@@ -360,6 +406,7 @@ mod mongo_impl {
             assert!(!c.effective_upsert());
             assert_eq!(c.effective_max_retries(), DEFAULT_MAX_RETRIES);
             assert!(!c.effective_index_fail_is_error());
+            assert!(!c.effective_use_tls());
         }
 
         #[test]
@@ -368,11 +415,13 @@ mod mongo_impl {
                 .batch_size(500)
                 .upsert(true)
                 .compress(false)
-                .max_retries(5);
+                .max_retries(5)
+                .use_tls(true);
             assert_eq!(c.effective_batch_size(), 500);
             assert!(c.effective_upsert());
             assert!(!c.effective_compress());
             assert_eq!(c.effective_max_retries(), 5);
+            assert!(c.effective_use_tls());
         }
 
         #[test]

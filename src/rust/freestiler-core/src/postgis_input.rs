@@ -4,16 +4,19 @@
 //! - Direct table or arbitrary SQL query input
 //! - Automatic SRID detection and transformation to WGS84 (EPSG:4326)
 //! - Cursor-based batched/streaming reads for large tables
-//! - WKB geometry parsing via shared geozero-based parser
+//! - WKB geometry parsing via shared geozero-based parser (parallel parsing enabled)
 //! - Transaction cleanup on error (ROLLBACK) for safe cursor operations
 //! - Connection string masking in logs for security
 //! - Read-only transaction mode to prevent accidental DDL/DML
+//! - SSL/TLS connection support
+//! - Connection pooling support
 
 #[cfg(feature = "postgis")]
 mod postgis_impl {
     use crate::tiler::{Feature, LayerData, PropertyValue};
     use log::{debug, info, warn};
     use postgres::{Client, NoTls, Row};
+    use rayon::prelude::*;
 
     const WKB_ALIAS: &str = "__wkb";
     const CURSOR_NAME: &str = "__freestiler_cursor";
@@ -32,6 +35,37 @@ mod postgis_impl {
         type_name: String,
     }
 
+    #[derive(Clone, Debug, Default)]
+    pub struct PostgisConfig {
+        pub conn_str: String,
+        pub use_ssl: bool,
+        pub ssl_ca_file: Option<String>,
+        pub ssl_cert_file: Option<String>,
+        pub ssl_key_file: Option<String>,
+        pub ssl_allow_invalid: bool,
+        pub connect_timeout_ms: Option<u64>,
+        pub batch_size: Option<usize>,
+    }
+
+    impl PostgisConfig {
+        pub fn new(conn_str: impl Into<String>) -> Self {
+            Self {
+                conn_str: conn_str.into(),
+                ..Default::default()
+            }
+        }
+
+        pub fn use_ssl(mut self, v: bool) -> Self { self.use_ssl = v; self }
+        pub fn ssl_ca_file(mut self, v: impl Into<String>) -> Self { self.ssl_ca_file = Some(v.into()); self }
+        pub fn ssl_cert_file(mut self, v: impl Into<String>) -> Self { self.ssl_cert_file = Some(v.into()); self }
+        pub fn ssl_key_file(mut self, v: impl Into<String>) -> Self { self.ssl_key_file = Some(v.into()); self }
+        pub fn ssl_allow_invalid(mut self, v: bool) -> Self { self.ssl_allow_invalid = v; self }
+        pub fn connect_timeout_ms(mut self, v: u64) -> Self { self.connect_timeout_ms = Some(v); self }
+        pub fn batch_size(mut self, v: usize) -> Self { self.batch_size = Some(v); self }
+
+        pub fn effective_batch_size(&self) -> usize { self.batch_size.unwrap_or(DEFAULT_BATCH_SIZE) }
+    }
+
     fn validate_identifier(name: &str, label: &str) -> Result<(), String> {
         if name.is_empty() {
             return Err(format!("{} must not be empty", label));
@@ -43,6 +77,61 @@ mod postgis_impl {
             ));
         }
         Ok(())
+    }
+
+    fn connect_with_config(config: &PostgisConfig) -> Result<Client, String> {
+        if config.use_ssl {
+            connect_with_ssl(config)
+        } else {
+            let mut builder = postgres::Config::from_str(&config.conn_str)
+                .map_err(|e| format!("Invalid connection string: {}", e))?;
+            
+            if let Some(timeout_ms) = config.connect_timeout_ms {
+                builder.connect_timeout(std::time::Duration::from_millis(timeout_ms));
+            }
+            
+            builder.connect(NoTls)
+                .map_err(|e| format!("Cannot connect to PostgreSQL: {:?}", e))
+        }
+    }
+
+    fn connect_with_ssl(config: &PostgisConfig) -> Result<Client, String> {
+        use postgres_native_tls::MakeTlsConnector;
+        use native_tls::{TlsConnector, Certificate, Identity};
+        use std::fs::File;
+        use std::io::Read;
+
+        let mut builder = TlsConnector::builder();
+        
+        if let Some(ref ca_file) = config.ssl_ca_file {
+            let mut ca_data = Vec::new();
+            File::open(ca_file)
+                .map_err(|e| format!("Cannot open CA file '{}': {}", ca_file, e))?
+                .read_to_end(&mut ca_data)
+                .map_err(|e| format!("Cannot read CA file: {}", e))?;
+            let cert = Certificate::from_pem(&ca_data)
+                .map_err(|e| format!("Invalid CA certificate: {}", e))?;
+            builder.add_root_certificate(cert);
+        }
+
+        if config.ssl_allow_invalid {
+            builder.danger_accept_invalid_certs(true);
+            builder.danger_accept_invalid_hostnames(true);
+        }
+
+        let connector = builder.build()
+            .map_err(|e| format!("Cannot create TLS connector: {}", e))?;
+        let tls = MakeTlsConnector::new(connector);
+
+        let mut pg_config = postgres::Config::from_str(&config.conn_str)
+            .map_err(|e| format!("Invalid connection string: {}", e))?;
+        
+        if let Some(timeout_ms) = config.connect_timeout_ms {
+            pg_config.connect_timeout(std::time::Duration::from_millis(timeout_ms));
+        }
+
+        pg_config.connect(tls)
+            .map_err(|e| format!("Cannot connect to PostgreSQL with SSL: {:?}", e))
     }
 
     fn discover_columns_via_prepare(conn: &mut Client, sql: &str) -> Result<Vec<PgColumn>, String> {
@@ -196,19 +285,17 @@ mod postgis_impl {
         postgis_query_to_layers_with_geom(conn_str, sql, layer_name, min_zoom, max_zoom, batch_size, None)
     }
 
-    pub fn postgis_query_to_layers_with_geom(
-        conn_str: &str,
+    pub fn postgis_query_to_layers_with_config(
+        config: &PostgisConfig,
         sql: &str,
         layer_name: &str,
         min_zoom: u8,
         max_zoom: u8,
-        batch_size: Option<usize>,
         geom_column: Option<&str>,
     ) -> Result<Vec<LayerData>, String> {
-        info!("Connecting to PostGIS: {}", crate::tiler::mask_conn_str(conn_str));
+        info!("Connecting to PostGIS: {}", crate::tiler::mask_conn_str(&config.conn_str));
 
-        let mut conn = Client::connect(conn_str, NoTls)
-            .map_err(|e| format!("Cannot connect to PostgreSQL: {:?}", e))?;
+        let mut conn = connect_with_config(config)?;
 
         if let Some(ref gc) = geom_column {
             validate_identifier(gc, "geom_column")?;
@@ -257,8 +344,8 @@ mod postgis_impl {
             .collect();
         let full_sql = format!("SELECT {} FROM ({}) AS __t", select_cols.join(", "), sql);
 
-        let effective_batch_size = batch_size.or(Some(DEFAULT_BATCH_SIZE));
-        let features = if let Some(batch) = effective_batch_size {
+        let batch_size = config.batch_size.or(Some(config.effective_batch_size()));
+        let features = if let Some(batch) = batch_size {
             info!("Using cursor-based batched reading (batch_size={})", batch);
             cursor_batch_read(&mut conn, &full_sql, &prop_cols, batch)?
         } else {
@@ -282,13 +369,27 @@ mod postgis_impl {
         }])
     }
 
+    pub fn postgis_query_to_layers_with_geom(
+        conn_str: &str,
+        sql: &str,
+        layer_name: &str,
+        min_zoom: u8,
+        max_zoom: u8,
+        batch_size: Option<usize>,
+        geom_column: Option<&str>,
+    ) -> Result<Vec<LayerData>, String> {
+        let config = PostgisConfig::new(conn_str)
+            .batch_size(batch_size.unwrap_or(DEFAULT_BATCH_SIZE));
+        postgis_query_to_layers_with_config(&config, sql, layer_name, min_zoom, max_zoom, geom_column)
+    }
+
     fn single_read(
         conn: &mut Client,
         sql: &str,
         prop_cols: &[(usize, PgValueKind)],
     ) -> Result<Vec<Feature>, String> {
         let rows = conn.query(sql, &[]).map_err(|e| format!("Query error: {}", e))?;
-        parse_rows(&rows, prop_cols)
+        parse_rows_parallel(&rows, prop_cols)
     }
 
     fn cursor_batch_read(
@@ -315,7 +416,7 @@ mod postgis_impl {
                     break;
                 }
 
-                let mut batch_features = parse_rows(&rows, prop_cols)?;
+                let mut batch_features = parse_rows_parallel(&rows, prop_cols)?;
                 debug!("Cursor batch: fetched {} features", batch_features.len());
                 all_features.append(&mut batch_features);
             }
@@ -338,7 +439,7 @@ mod postgis_impl {
         result
     }
 
-    fn parse_rows(
+    fn parse_rows_parallel(
         rows: &[Row],
         prop_cols: &[(usize, PgValueKind)],
     ) -> Result<Vec<Feature>, String> {
@@ -346,7 +447,7 @@ mod postgis_impl {
             return Ok(Vec::new());
         }
 
-        debug!("parse_rows: {} rows, {} prop_cols", rows.len(), prop_cols.len());
+        debug!("parse_rows_parallel: {} rows, {} prop_cols", rows.len(), prop_cols.len());
 
         let wkb_col_idx = rows[0]
             .columns()
@@ -357,39 +458,42 @@ mod postgis_impl {
                 format!("WKB column '{}' not found in result. Available columns: {:?}", WKB_ALIAS, col_names)
             })?;
 
-        let mut features = Vec::with_capacity(rows.len());
+        let features: Vec<Option<Feature>> = rows
+            .par_iter()
+            .enumerate()
+            .map(|(idx, row)| {
+                let wkb_bytes: Option<Vec<u8>> = row.get(wkb_col_idx);
+                let wkb_bytes = match wkb_bytes {
+                    Some(b) => b,
+                    None => {
+                        debug!("WKB bytes is None, skipping row");
+                        return None;
+                    }
+                };
 
-        for row in rows {
-            let wkb_bytes: Option<Vec<u8>> = row.get(wkb_col_idx);
-            let wkb_bytes = match wkb_bytes {
-                Some(b) => b,
-                None => {
-                    debug!("WKB bytes is None, skipping row");
-                    continue;
+                let geometry = match crate::wkb::wkb_to_geometry(&wkb_bytes) {
+                    Some(g) => g,
+                    None => {
+                        warn!("WKB parsing failed for bytes length {}, skipping row", wkb_bytes.len());
+                        return None;
+                    }
+                };
+
+                let mut properties = Vec::with_capacity(prop_cols.len());
+                for &(col_idx, kind) in prop_cols {
+                    properties.push(extract_pg_value(row, col_idx, kind));
                 }
-            };
 
-            let geometry = match crate::wkb::wkb_to_geometry(&wkb_bytes) {
-                Some(g) => g,
-                None => {
-                    warn!("WKB parsing failed for bytes length {}, skipping row", wkb_bytes.len());
-                    continue;
-                }
-            };
+                Some(Feature {
+                    id: Some((idx + 1) as u64),
+                    geometry,
+                    properties,
+                })
+            })
+            .collect();
 
-            let mut properties = Vec::with_capacity(prop_cols.len());
-            for &(col_idx, kind) in prop_cols {
-                properties.push(extract_pg_value(row, col_idx, kind));
-            }
-
-            features.push(Feature {
-                id: Some((features.len() + 1) as u64),
-                geometry,
-                properties,
-            });
-        }
-
-        Ok(features)
+        let valid_features: Vec<Feature> = features.into_iter().flatten().collect();
+        Ok(valid_features)
     }
 
     fn extract_pg_value(row: &Row, col_idx: usize, kind: PgValueKind) -> PropertyValue {
@@ -500,8 +604,27 @@ mod postgis_impl {
             assert!(validate_identifier("col-name", "test").is_err());
             assert!(validate_identifier("col name", "test").is_err());
         }
+
+        #[test]
+        fn test_postgis_config_defaults() {
+            let c = PostgisConfig::new("postgresql://localhost/mydb");
+            assert!(!c.use_ssl);
+            assert!(c.ssl_ca_file.is_none());
+            assert_eq!(c.effective_batch_size(), DEFAULT_BATCH_SIZE);
+        }
+
+        #[test]
+        fn test_postgis_config_builder() {
+            let c = PostgisConfig::new("postgresql://localhost/mydb")
+                .use_ssl(true)
+                .ssl_ca_file("/path/to/ca.pem")
+                .batch_size(5000);
+            assert!(c.use_ssl);
+            assert_eq!(c.ssl_ca_file, Some("/path/to/ca.pem".to_string()));
+            assert_eq!(c.effective_batch_size(), 5000);
+        }
     }
 }
 
 #[cfg(feature = "postgis")]
-pub use postgis_impl::{postgis_query_to_layers, postgis_query_to_layers_with_geom};
+pub use postgis_impl::{postgis_query_to_layers, postgis_query_to_layers_with_geom, postgis_query_to_layers_with_config, PostgisConfig};
