@@ -1006,6 +1006,13 @@ freestile_postgis <- function(
 #' @param batch_size Integer. Batch size for cursor reading. NULL loads all at once.
 #' @param upsert Logical. Whether to use upsert mode (replace existing tiles at
 #'   same coordinates) instead of insert (default FALSE).
+#' @param mongo_batch_size Integer. Mongo write batch size (default 4096).
+#' @param mongo_write_concurrency Integer. Mongo concurrent write workers (default 4).
+#' @param mongo_create_indexes Logical or NULL. Whether to create Mongo indexes.
+#' @param large_mode Logical or NULL. Force large-data mode TRUE/FALSE, NULL = auto.
+#' @param large_mode_threshold Integer or NULL. Threshold used for auto large-mode switch.
+#' @param mongo_flush_min_tiles Integer or NULL. Min tiles to buffer before Mongo flush (large-data path).
+#' @param mongo_flush_max_mb Integer or NULL. Max buffer size in MiB before Mongo flush (large-data path).
 #'
 #' @return A character string with the write result.
 #'
@@ -1040,7 +1047,14 @@ freestile_postgis_to_mongo <- function(
     quiet = FALSE,
     batch_size = NULL,
     upsert = FALSE,
-    geom_column = NULL
+    geom_column = NULL,
+    mongo_batch_size = NULL,
+    mongo_write_concurrency = NULL,
+    mongo_create_indexes = NULL,
+    large_mode = NULL,
+    large_mode_threshold = NULL,
+    mongo_flush_min_tiles = NULL,
+    mongo_flush_max_mb = NULL
 ) {
   tile_format <- match.arg(tile_format, c("mlt", "mvt"))
 
@@ -1063,7 +1077,14 @@ freestile_postgis_to_mongo <- function(
     quiet = quiet,
     batch_size = if (is.null(batch_size)) 0L else as.integer(batch_size),
     upsert = upsert,
-    geom_column = if (is.null(geom_column)) "" else geom_column
+    geom_column = if (is.null(geom_column)) "" else geom_column,
+    mongo_batch_size = if (is.null(mongo_batch_size)) 0L else as.integer(mongo_batch_size),
+    mongo_write_concurrency = if (is.null(mongo_write_concurrency)) 0L else as.integer(mongo_write_concurrency),
+    mongo_create_indexes = if (is.null(mongo_create_indexes)) NA else isTRUE(mongo_create_indexes),
+    force_large_mode = if (is.null(large_mode)) NA else isTRUE(large_mode),
+    large_mode_threshold = if (is.null(large_mode_threshold)) 0L else as.integer(large_mode_threshold),
+    mongo_flush_min_tiles = if (is.null(mongo_flush_min_tiles)) 0L else as.integer(mongo_flush_min_tiles),
+    mongo_flush_max_mb = if (is.null(mongo_flush_max_mb)) 0L else as.integer(mongo_flush_max_mb)
   )
 
   if (startsWith(result, "Error:")) {

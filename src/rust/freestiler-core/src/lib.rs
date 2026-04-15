@@ -28,4 +28,8 @@ pub use mongo_writer::MongoConfig;
 pub use engine::{OutputTarget, TileConfig};
 
 #[cfg(feature = "postgis")]
-pub use postgis_input::{postgis_query_to_layers_with_geom, PostgisConfig};
+pub use postgis_input::{
+    postgis_query_count_with_config, postgis_query_each_batch_with_config,
+    postgis_query_exceeds_with_config, postgis_query_to_layers_with_geom, PostgisBatchScanner,
+    PostgisConfig, PostgisLayerSchema, postgis_probe_and_maybe_load_layers_with_config,
+};

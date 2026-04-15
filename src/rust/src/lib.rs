@@ -4,6 +4,8 @@ use std::io::{Read, Seek, SeekFrom};
 use std::time::Instant;
 
 use freestiler_core::engine::{self, ProgressReporter, TileConfig};
+
+const MONGO_BY_ZOOM_FEATURE_THRESHOLD: u64 = 200_000;
 use freestiler_core::tiler::{Feature, Geometry, LayerData, PropertyValue};
 
 // R console flush (Rprintf output is buffered; flush to show progress immediately)
@@ -1079,6 +1081,11 @@ fn rust_pmtiles_metadata(path: &str) -> String {
 /// @param batch_size Batch size for cursor-based reading (0 = no cursor)
 /// @param upsert Whether to use upsert mode for MongoDB writes
 /// @param geom_column Name of geometry column (empty = auto-detect)
+/// @param mongo_batch_size MongoDB write batch size (0 = default)
+/// @param mongo_write_concurrency MongoDB concurrent write workers (0 = default)
+/// @param mongo_create_indexes Whether to create MongoDB indexes (NA = default TRUE)
+/// @param force_large_mode Force large-data mode if TRUE/FALSE, NA = auto
+/// @param large_mode_threshold Feature threshold for auto large-mode switch (<=0 = default)
 /// @export
 #[extendr]
 fn rust_freestile_postgis_to_mongo(
@@ -1101,6 +1108,13 @@ fn rust_freestile_postgis_to_mongo(
     batch_size: i32,
     upsert: bool,
     geom_column: &str,
+    mongo_batch_size: i32,
+    mongo_write_concurrency: i32,
+    mongo_create_indexes: Nullable<bool>,
+    force_large_mode: Nullable<bool>,
+    large_mode_threshold: i32,
+    mongo_flush_min_tiles: i32,
+    mongo_flush_max_mb: i32,
 ) -> String {
     #[cfg(not(all(feature = "postgis", feature = "mongodb-out")))]
     {
@@ -1109,6 +1123,9 @@ fn rust_freestile_postgis_to_mongo(
             layer_name, tile_format, min_zoom, max_zoom, base_zoom,
             do_simplify, drop_rate, cluster_distance, cluster_maxzoom,
             do_coalesce, quiet, batch_size, upsert, geom_column,
+            mongo_batch_size, mongo_write_concurrency, mongo_create_indexes,
+            force_large_mode, large_mode_threshold,
+            mongo_flush_min_tiles, mongo_flush_max_mb,
         );
         return "Error: PostGIS + MongoDB support not compiled. Rebuild with both features enabled."
             .to_string();
@@ -1122,48 +1139,115 @@ fn rust_freestile_postgis_to_mongo(
             Box::new(RReporter)
         };
 
-        let mongo_config = freestiler_core::MongoConfig::new(mongo_uri, mongo_db, mongo_collection)
+        let batch = if batch_size > 0 { Some(batch_size as usize) } else { None };
+        let pg_config = freestiler_core::PostgisConfig::new(conn_str)
+            .batch_size(batch.unwrap_or(10000));
+
+        let mut mongo_config = freestiler_core::MongoConfig::new(mongo_uri, mongo_db, mongo_collection)
+            .batch_size(4096)
+            .write_concurrency(4)
             .compress(true)
             .create_indexes(true)
             .upsert(upsert);
-
-        let output = freestiler_core::OutputTarget::MongoDB {
-            config: mongo_config,
-        };
+        if mongo_batch_size > 0 {
+            mongo_config = mongo_config.batch_size(mongo_batch_size as usize);
+        }
+        if mongo_write_concurrency > 0 {
+            mongo_config = mongo_config.write_concurrency(mongo_write_concurrency as usize);
+        }
+        if let Some(v) = mongo_create_indexes.into_option() {
+            mongo_config = mongo_config.create_indexes(v);
+        }
+        if mongo_flush_min_tiles > 0 {
+            mongo_config = mongo_config.flush_tile_threshold(mongo_flush_min_tiles as usize);
+        }
+        if mongo_flush_max_mb > 0 {
+            mongo_config = mongo_config.flush_byte_threshold(
+                (mongo_flush_max_mb as u64).saturating_mul(1024 * 1024),
+            );
+        }
 
         if !quiet {
             reporter.report("  Connecting to PostGIS...");
         }
-
-        let batch = if batch_size > 0 { Some(batch_size as usize) } else { None };
         let geom_col = if geom_column.is_empty() { None } else { Some(geom_column) };
-
-        let layers = match freestiler_core::postgis_input::postgis_query_to_layers_with_geom(
-            conn_str,
-            sql,
-            layer_name,
-            min_zoom as u8,
-            max_zoom as u8,
-            batch,
-            geom_col,
-        ) {
-            Ok(l) => l,
-            Err(e) => return format!("Error: {}", freestiler_core::tiler::mask_conn_str(&e)),
-        };
-
-        if !quiet {
-            let total: usize = layers.iter().map(|l| l.features.len()).sum();
-            reporter.report(&format!("  Query returned {} features", total));
-        }
 
         let config = TileConfig::from_binding_params(
             tile_format, min_zoom as u8, max_zoom as u8,
             base_zoom, do_simplify, drop_rate, cluster_distance, cluster_maxzoom, do_coalesce,
         );
 
-        match engine::generate_tiles_to_target(&layers, &output, &config, reporter.as_ref()) {
-            Ok(count) => format!("{} tiles written to MongoDB", count),
-            Err(e) => format!("Error: {}", freestiler_core::tiler::mask_conn_str(&e)),
+        let threshold = if large_mode_threshold > 0 {
+            large_mode_threshold as u64
+        } else {
+            MONGO_BY_ZOOM_FEATURE_THRESHOLD
+        };
+
+        let mut small_layers_opt: Option<Vec<freestiler_core::tiler::LayerData>> = None;
+        let is_large = match force_large_mode.into_option() {
+            Some(v) => v,
+            None => match freestiler_core::postgis_probe_and_maybe_load_layers_with_config(
+                &pg_config,
+                sql,
+                layer_name,
+                min_zoom as u8,
+                max_zoom as u8,
+                geom_col,
+                threshold,
+            ) {
+                Ok((v, layers)) => {
+                    small_layers_opt = layers;
+                    v
+                }
+                Err(e) => return format!("Error: {}", freestiler_core::tiler::mask_conn_str(&e)),
+            },
+        };
+
+        if !is_large {
+            if !quiet {
+                reporter.report("  Path: in-memory PostGIS load + Mongo segmented write");
+            }
+            let output = freestiler_core::OutputTarget::MongoDB {
+                config: mongo_config,
+            };
+            let layers = match small_layers_opt.take() {
+                Some(l) => l,
+                None => match freestiler_core::postgis_input::postgis_query_to_layers_with_geom(
+                    conn_str,
+                    sql,
+                    layer_name,
+                    min_zoom as u8,
+                    max_zoom as u8,
+                    batch,
+                    geom_col,
+                ) {
+                    Ok(l) => l,
+                    Err(e) => return format!("Error: {}", freestiler_core::tiler::mask_conn_str(&e)),
+                },
+            };
+            match engine::generate_tiles_to_target(&layers, &output, &config, reporter.as_ref()) {
+                Ok(count) => format!("{} tiles written to MongoDB", count),
+                Err(e) => format!("Error: {}", freestiler_core::tiler::mask_conn_str(&e)),
+            }
+        } else {
+            if !quiet {
+                reporter.report(&format!(
+                    "  Path: large-data mode (single PostGIS scan + per-zoom Mongo flush, threshold={})",
+                    threshold
+                ));
+            }
+            match engine::generate_postgis_query_to_mongo_by_zoom(
+                &pg_config,
+                sql,
+                layer_name,
+                geom_col,
+                &mongo_config,
+                &config,
+                reporter.as_ref(),
+            ) {
+                Ok(count) => format!("{} tiles written to MongoDB", count),
+                Err(e) => format!("Error: {}", freestiler_core::tiler::mask_conn_str(&e)),
+            }
         }
     }
 }

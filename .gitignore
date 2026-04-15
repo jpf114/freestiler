@@ -32,3 +32,5 @@ python/nc.dbf
 python/nc.prj
 python/nc.shp
 python/nc.shx
+python/python/freestiler/_freestiler.cp310-win_amd64.pyd
+python/python/freestiler/_freestiler.pdb

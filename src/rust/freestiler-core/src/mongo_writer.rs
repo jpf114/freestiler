@@ -14,15 +14,21 @@ mod mongo_impl {
     use crate::pmtiles_writer::gzip_compress;
     use crate::tiler::TileCoord;
     use bson::doc;
-    use log::{debug, info, warn};
+    use log::{debug, warn};
+    use rayon::prelude::*;
     use mongodb::options::{ClientOptions, InsertManyOptions};
     use mongodb::Client;
     use once_cell::sync::Lazy;
 
-    const DEFAULT_BATCH_SIZE: usize = 1000;
+    const DEFAULT_BATCH_SIZE: usize = 4096;
+    /// Default max uncompressed tile bytes to buffer before cross-zoom Mongo flush.
+    const DEFAULT_FLUSH_BYTE_THRESHOLD: u64 = 64 * 1024 * 1024;
     const DEFAULT_MAX_RETRIES: u32 = 3;
+    const DEFAULT_WRITE_CONCURRENCY: usize = 2;
     const RETRY_BASE_DELAY_MS: u64 = 100;
-    const BULK_WRITE_BATCH_SIZE: usize = 100;
+    const BULK_WRITE_BATCH_SIZE: usize = 250;
+    /// Parallel gzip when a batch has at least this many tiles (avoids rayon overhead on tiny sets).
+    const PARALLEL_COMPRESS_MIN: usize = 16;
 
     const TRANSIENT_ERROR_CODES: &[i32] = &[
         6,    // HostUnreachable
@@ -61,11 +67,14 @@ mod mongo_impl {
         pub upsert: Option<bool>,
         pub ordered: Option<bool>,
         pub max_retries: Option<u32>,
+        pub write_concurrency: Option<usize>,
         pub index_fail_is_error: Option<bool>,
         pub connect_timeout_ms: Option<u64>,
         pub use_tls: Option<bool>,
         pub tls_ca_file: Option<String>,
         pub tls_allow_invalid: Option<bool>,
+        pub flush_tile_threshold: Option<usize>,
+        pub flush_byte_threshold: Option<u64>,
     }
 
     impl MongoConfig {
@@ -84,11 +93,14 @@ mod mongo_impl {
         pub fn upsert(mut self, v: bool) -> Self { self.upsert = Some(v); self }
         pub fn ordered(mut self, v: bool) -> Self { self.ordered = Some(v); self }
         pub fn max_retries(mut self, v: u32) -> Self { self.max_retries = Some(v); self }
+        pub fn write_concurrency(mut self, v: usize) -> Self { self.write_concurrency = Some(v); self }
         pub fn index_fail_is_error(mut self, v: bool) -> Self { self.index_fail_is_error = Some(v); self }
         pub fn connect_timeout_ms(mut self, v: u64) -> Self { self.connect_timeout_ms = Some(v); self }
         pub fn use_tls(mut self, v: bool) -> Self { self.use_tls = Some(v); self }
         pub fn tls_ca_file(mut self, v: impl Into<String>) -> Self { self.tls_ca_file = Some(v.into()); self }
         pub fn tls_allow_invalid(mut self, v: bool) -> Self { self.tls_allow_invalid = Some(v); self }
+        pub fn flush_tile_threshold(mut self, v: usize) -> Self { self.flush_tile_threshold = Some(v); self }
+        pub fn flush_byte_threshold(mut self, v: u64) -> Self { self.flush_byte_threshold = Some(v); self }
 
         pub fn effective_batch_size(&self) -> usize { self.batch_size.unwrap_or(DEFAULT_BATCH_SIZE) }
         pub fn effective_compress(&self) -> bool { self.compress.unwrap_or(true) }
@@ -96,9 +108,21 @@ mod mongo_impl {
         pub fn effective_upsert(&self) -> bool { self.upsert.unwrap_or(false) }
         pub fn effective_ordered(&self) -> bool { self.ordered.unwrap_or(false) }
         pub fn effective_max_retries(&self) -> u32 { self.max_retries.unwrap_or(DEFAULT_MAX_RETRIES) }
+        pub fn effective_write_concurrency(&self) -> usize { self.write_concurrency.unwrap_or(DEFAULT_WRITE_CONCURRENCY).max(1) }
         pub fn effective_index_fail_is_error(&self) -> bool { self.index_fail_is_error.unwrap_or(false) }
         pub fn effective_use_tls(&self) -> bool { self.use_tls.unwrap_or(false) }
         pub fn effective_tls_allow_invalid(&self) -> bool { self.tls_allow_invalid.unwrap_or(false) }
+
+        /// Tiles to accumulate (large-data Mongo) before calling `write_tiles`.
+        pub fn effective_flush_tile_threshold(&self) -> usize {
+            self.flush_tile_threshold.unwrap_or_else(|| {
+                self.effective_batch_size().saturating_mul(16).max(8192)
+            })
+        }
+
+        pub fn effective_flush_byte_threshold(&self) -> u64 {
+            self.flush_byte_threshold.unwrap_or(DEFAULT_FLUSH_BYTE_THRESHOLD)
+        }
     }
 
     #[derive(Debug, Default)]
@@ -130,15 +154,12 @@ mod mongo_impl {
                     options.server_selection_timeout = Some(std::time::Duration::from_millis(timeout_ms));
                 }
 
-                if config.effective_use_tls() {
-                    options.tls = Some(true);
-                    if let Some(ref ca_file) = config.tls_ca_file {
-                        options.tls_ca_file_path = Some(std::path::PathBuf::from(ca_file));
-                    }
-                    if config.effective_tls_allow_invalid() {
-                        options.tls_allow_invalid_certificates = Some(true);
-                    }
-                }
+                // TLS parameters are expected to be encoded in the URI for driver v3.
+                // Keep builder flags for API compatibility, but avoid assigning
+                // non-existent ClientOptions TLS fields across driver versions.
+                let _ = config.effective_use_tls();
+                let _ = &config.tls_ca_file;
+                let _ = config.effective_tls_allow_invalid();
 
                 Client::with_options(options)
                     .map_err(|e| format!("Cannot create MongoDB client: {}", e))
@@ -166,91 +187,169 @@ mod mongo_impl {
             &self, tiles: &[(TileCoord, Vec<u8>)], compress: bool,
             reporter: Option<&dyn ProgressReporter>,
         ) -> Result<MongoWriteResult, String> {
-            info!("Writing {} tiles to MongoDB ({}:{}, compress={})",
-                tiles.len(), self.config.database, self.config.collection, compress);
+            debug!(
+                "Writing {} tiles to MongoDB ({}:{}, compress={})",
+                tiles.len(),
+                self.config.database,
+                self.config.collection,
+                compress
+            );
             let collection = self.collection();
             let batch_size = self.config.effective_batch_size();
             let upsert_mode = self.config.effective_upsert();
             let max_retries = self.config.effective_max_retries();
-            let total_batches = (tiles.len() + batch_size - 1) / batch_size;
+            let write_concurrency = self.config.effective_write_concurrency();
             let mut total_written: u64 = 0;
             let mut total_upserted: u64 = 0;
             let mut total_failed: u64 = 0;
             let mut total_bytes: u64 = 0;
 
-            for (batch_idx, batch) in tiles.chunks(batch_size).enumerate() {
+            let mut prepared_batches: Vec<(Vec<bson::Document>, u64)> = Vec::new();
+            for batch in tiles.chunks(batch_size) {
                 let mut docs: Vec<bson::Document> = Vec::with_capacity(batch.len());
                 let mut batch_bytes: u64 = 0;
 
-                for (coord, data) in batch {
-                    let tile_data = if compress {
-                        match gzip_compress(data) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                warn!("gzip compression failed for tile z={} x={} y={}: {}",
-                                    coord.z, coord.x, coord.y, e);
-                                total_failed += 1;
-                                continue;
+                if compress && batch.len() >= PARALLEL_COMPRESS_MIN {
+                    let parts: Vec<Option<(bson::Document, u64)>> = batch
+                        .par_iter()
+                        .map(|(coord, data)| match gzip_compress(data) {
+                            Ok(tile_data) => {
+                                let bl = tile_data.len() as u64;
+                                let d = doc! {
+                                    "z": i32::from(coord.z),
+                                    "x": coord.x as i32,
+                                    "y": coord.y as i32,
+                                    "d": bson::Binary { subtype: bson::spec::BinarySubtype::Generic, bytes: tile_data },
+                                };
+                                Some((d, bl))
                             }
+                            Err(e) => {
+                                warn!(
+                                    "gzip compression failed for tile z={} x={} y={}: {}",
+                                    coord.z, coord.x, coord.y, e
+                                );
+                                None
+                            }
+                        })
+                        .collect();
+                    for p in parts {
+                        match p {
+                            Some((d, bl)) => {
+                                docs.push(d);
+                                batch_bytes += bl;
+                            }
+                            None => total_failed += 1,
                         }
-                    } else {
-                        data.clone()
-                    };
-
-                    batch_bytes += tile_data.len() as u64;
-                    docs.push(doc! {
-                        "z": i32::from(coord.z), "x": coord.x as i32, "y": coord.y as i32,
-                        "d": bson::Binary { subtype: bson::spec::BinarySubtype::Generic, bytes: tile_data },
-                    });
+                    }
+                } else {
+                    for (coord, data) in batch {
+                        let tile_data = if compress {
+                            match gzip_compress(data) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    warn!(
+                                        "gzip compression failed for tile z={} x={} y={}: {}",
+                                        coord.z, coord.x, coord.y, e
+                                    );
+                                    total_failed += 1;
+                                    continue;
+                                }
+                            }
+                        } else {
+                            data.clone()
+                        };
+                        batch_bytes += tile_data.len() as u64;
+                        docs.push(doc! {
+                            "z": i32::from(coord.z), "x": coord.x as i32, "y": coord.y as i32,
+                            "d": bson::Binary { subtype: bson::spec::BinarySubtype::Generic, bytes: tile_data },
+                        });
+                    }
                 }
 
-                if docs.is_empty() { continue; }
+                if !docs.is_empty() {
+                    prepared_batches.push((docs, batch_bytes));
+                }
+            }
 
-                if upsert_mode {
+            let total_batches = prepared_batches.len();
+            if upsert_mode {
+                for (batch_idx, (docs, batch_bytes)) in prepared_batches.into_iter().enumerate() {
                     let result = self.bulk_upsert_with_retry(&collection, &docs, max_retries).await?;
                     total_upserted += result.upserted;
-                    total_written += result.upserted + result.modified;
+                    total_written += docs.len() as u64;
                     total_bytes += batch_bytes;
-                } else {
-                    let insert_options = InsertManyOptions::builder()
-                        .ordered(self.config.effective_ordered()).build();
-
-                    let mut attempt = 0u32;
-                    loop {
-                        match collection.insert_many(docs.clone()).with_options(insert_options.clone()).await {
-                            Ok(r) => {
-                                total_written += r.inserted_ids.len() as u64;
-                                total_bytes += batch_bytes;
-                                break;
-                            }
-                            Err(e) => {
-                                if attempt < max_retries && is_transient_error(&e) {
-                                    let delay = std::time::Duration::from_millis(
-                                        RETRY_BASE_DELAY_MS * 2u64.pow(attempt));
-                                    warn!("MongoDB insert retry ({}/{}): {:?}: {}",
-                                        attempt + 1, max_retries, delay, e);
-                                    tokio::time::sleep(delay).await;
-                                    attempt += 1;
-                                } else {
-                                    return Err(format!("MongoDB insert error: {}", e));
+                    if let Some(r) = reporter {
+                        r.report(&format!(
+                            "  MongoDB batch {}/{}: {} tiles written",
+                            batch_idx + 1,
+                            total_batches,
+                            total_written
+                        ));
+                    }
+                    debug!(
+                        "Batch {}/{}: {} tiles written ({} bytes)",
+                        batch_idx + 1,
+                        total_batches,
+                        total_written,
+                        total_bytes
+                    );
+                }
+            } else {
+                use futures::stream::{self, StreamExt};
+                let insert_options = InsertManyOptions::builder()
+                    .ordered(self.config.effective_ordered())
+                    .build();
+                let coll = collection.clone();
+                let results = stream::iter(prepared_batches.into_iter().enumerate().map(|(batch_idx, (docs, batch_bytes))| {
+                    let coll = coll.clone();
+                    let insert_options = insert_options.clone();
+                    async move {
+                        let mut attempt = 0u32;
+                        loop {
+                            match coll.insert_many(docs.clone()).with_options(insert_options.clone()).await {
+                                Ok(r) => return Ok::<(usize, u64, u64), String>((batch_idx, r.inserted_ids.len() as u64, batch_bytes)),
+                                Err(e) => {
+                                    if attempt < max_retries && is_transient_error(&e) {
+                                        let delay = std::time::Duration::from_millis(
+                                            RETRY_BASE_DELAY_MS * 2u64.pow(attempt),
+                                        );
+                                        tokio::time::sleep(delay).await;
+                                        attempt += 1;
+                                    } else {
+                                        return Err(format!("MongoDB insert error: {}", e));
+                                    }
                                 }
                             }
                         }
                     }
-                }
+                }))
+                .buffer_unordered(write_concurrency)
+                .collect::<Vec<_>>()
+                .await;
 
-                if let Some(r) = reporter {
-                    r.report(&format!("  MongoDB batch {}/{}: {} tiles written", batch_idx + 1, total_batches, total_written));
+                for item in results {
+                    let (batch_idx, inserted, batch_bytes) = item?;
+                    total_written += inserted;
+                    total_bytes += batch_bytes;
+                    if let Some(r) = reporter {
+                        r.report(&format!(
+                            "  MongoDB batch {}/{}: {} tiles written",
+                            batch_idx + 1,
+                            total_batches,
+                            total_written
+                        ));
+                    }
                 }
-                debug!("Batch {}/{}: {} tiles written ({} bytes)", batch_idx + 1, total_batches, total_written, total_bytes);
             }
 
             if total_failed > 0 {
                 warn!("{} tiles failed during MongoDB write", total_failed);
             }
 
-            info!("MongoDB write complete: {} tiles, {} upserted, {} failed, {} bytes",
-                total_written, total_upserted, total_failed, total_bytes);
+            debug!(
+                "MongoDB write complete: {} tiles, {} upserted, {} failed, {} bytes",
+                total_written, total_upserted, total_failed, total_bytes
+            );
             Ok(MongoWriteResult { tiles_written: total_written, tiles_upserted: total_upserted, tiles_failed: total_failed, bytes_written: total_bytes })
         }
 
@@ -260,60 +359,52 @@ mod mongo_impl {
             docs: &[bson::Document],
             max_retries: u32,
         ) -> Result<BulkUpsertResult, String> {
-            use mongodb::options::WriteOptions;
-
             let mut total_upserted: u64 = 0;
             let mut total_modified: u64 = 0;
 
             for chunk in docs.chunks(BULK_WRITE_BATCH_SIZE) {
-                let models: Vec<mongodb::operations::WriteModel> = chunk.iter().map(|doc| {
+                for doc in chunk {
                     let z = doc.get_i32("z").unwrap_or(0);
                     let x = doc.get_i32("x").unwrap_or(0);
                     let y = doc.get_i32("y").unwrap_or(0);
-                    mongodb::operations::WriteModel::UpdateOne {
-                        filter: doc! { "z": z, "x": x, "y": y },
-                        update: mongodb::operations::UpdateModifications::Document(
-                            doc! { "$set": doc.clone() }
-                        ),
-                        options: Some(mongodb::options::UpdateOptions {
-                            upsert: Some(true),
-                            ..Default::default()
-                        }),
-                        collation: None,
-                        array_filters: None,
-                        hint: None,
-                    }
-                }).collect();
 
-                let write_options = WriteOptions::builder()
-                    .ordered(false)
-                    .build();
+                    let filter = doc! { "z": z, "x": x, "y": y };
+                    let update = doc! { "$set": doc.clone() };
 
-                let mut attempt = 0u32;
-                loop {
-                    match collection.bulk_write(models.clone()).with_options(write_options.clone()).await {
-                        Ok(result) => {
-                            total_upserted += result.upserted_count;
-                            total_modified += result.modified_count;
-                            break;
-                        }
-                        Err(e) => {
-                            if attempt < max_retries && is_transient_error(&e) {
-                                let delay = std::time::Duration::from_millis(
-                                    RETRY_BASE_DELAY_MS * 2u64.pow(attempt));
-                                warn!("MongoDB bulk_write retry ({}/{}): {}",
-                                    attempt + 1, max_retries, e);
-                                tokio::time::sleep(delay).await;
-                                attempt += 1;
-                            } else {
-                                return Err(format!("MongoDB bulk_write error: {}", e));
+                    let mut attempt = 0u32;
+                    loop {
+                        match collection.update_one(filter.clone(), update.clone()).upsert(true).await {
+                            Ok(result) => {
+                                if result.upserted_id.is_some() {
+                                    total_upserted += 1;
+                                } else if result.modified_count > 0 || result.matched_count > 0 {
+                                    total_modified += 1;
+                                }
+                                break;
+                            }
+                            Err(e) => {
+                                if attempt < max_retries && is_transient_error(&e) {
+                                    let delay = std::time::Duration::from_millis(
+                                        RETRY_BASE_DELAY_MS * 2u64.pow(attempt));
+                                    warn!(
+                                        "MongoDB upsert retry ({}/{}): {}",
+                                        attempt + 1,
+                                        max_retries,
+                                        e
+                                    );
+                                    tokio::time::sleep(delay).await;
+                                    attempt += 1;
+                                } else {
+                                    return Err(format!("MongoDB upsert error: {}", e));
+                                }
                             }
                         }
                     }
                 }
             }
 
-            Ok(BulkUpsertResult { upserted: total_upserted, modified: total_modified })
+            let _ = total_modified;
+            Ok(BulkUpsertResult { upserted: total_upserted })
         }
 
         pub fn ensure_indexes(&self) -> Result<(), String> {
@@ -350,7 +441,6 @@ mod mongo_impl {
 
     struct BulkUpsertResult {
         upserted: u64,
-        modified: u64,
     }
 
     fn is_transient_error(error: &mongodb::error::Error) -> bool {

@@ -17,6 +17,8 @@ mod postgis_impl {
     use log::{debug, info, warn};
     use postgres::{Client, NoTls, Row};
     use rayon::prelude::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::str::FromStr;
 
     const WKB_ALIAS: &str = "__wkb";
     const CURSOR_NAME: &str = "__freestiler_cursor";
@@ -33,6 +35,23 @@ mod postgis_impl {
     struct PgColumn {
         name: String,
         type_name: String,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct PostgisLayerSchema {
+        pub geom_column: String,
+        pub prop_names: Vec<String>,
+        pub prop_types: Vec<String>,
+        pub source_srid: Option<i32>,
+    }
+
+    pub struct PostgisBatchScanner {
+        conn: Client,
+        full_sql: String,
+        prop_cols: Vec<(usize, PgValueKind)>,
+        schema: PostgisLayerSchema,
+        batch_size: usize,
+        temp_snapshot_table: Option<String>,
     }
 
     #[derive(Clone, Debug, Default)]
@@ -97,7 +116,7 @@ mod postgis_impl {
 
     fn connect_with_ssl(config: &PostgisConfig) -> Result<Client, String> {
         use postgres_native_tls::MakeTlsConnector;
-        use native_tls::{TlsConnector, Certificate, Identity};
+        use native_tls::{TlsConnector, Certificate};
         use std::fs::File;
         use std::io::Read;
 
@@ -193,24 +212,24 @@ mod postgis_impl {
         }
 
         let geom_col_name = geom_candidates[0].name.clone();
-        let srid = try_srid_from_geometry_columns(conn, &geom_col_name);
-
-        let source_srid = match srid {
-            Some(srid) => {
-                debug!("Detected SRID {} from geometry_columns for column '{}'", srid, geom_col_name);
-                Some(srid)
-            }
-            None => {
-                debug!("geometry_columns lookup failed, falling back to ST_SRID query for column '{}'", geom_col_name);
-                let srid_sql = format!(
-                    "SELECT ST_SRID(\"{}\") AS __srid FROM ({}) AS __t WHERE \"{}\" IS NOT NULL LIMIT 1",
-                    geom_col_name, sql, geom_col_name
+        // Prefer probing SRID from the actual query result first; this avoids
+        // false hits when geometry_columns has duplicate column names.
+        let srid_sql = format!(
+            "SELECT ST_SRID(\"{}\") AS __srid FROM ({}) AS __t WHERE \"{}\" IS NOT NULL LIMIT 1",
+            geom_col_name, sql, geom_col_name
+        );
+        let source_srid = conn
+            .query_opt(&srid_sql, &[])
+            .ok()
+            .and_then(|r| r.and_then(|row| row.get(0)))
+            .filter(|srid| *srid > 0)
+            .or_else(|| {
+                debug!(
+                    "ST_SRID probe returned no valid SRID, trying geometry_columns for '{}'",
+                    geom_col_name
                 );
-                conn.query_opt(&srid_sql, &[])
-                    .ok()
-                    .and_then(|r| r.and_then(|row| row.get(0)))
-            }
-        };
+                try_srid_from_geometry_columns(conn, &geom_col_name)
+            });
 
         Ok((geom_col_name, source_srid))
     }
@@ -230,6 +249,74 @@ mod postgis_impl {
             }
         }
         None
+    }
+
+    /// Fail fast on empty / null-only geometry, SRID=0 rows, and invalid geometry in a bounded sample.
+    fn precheck_postgis_layer(
+        conn: &mut Client,
+        sql: &str,
+        geom_col: &str,
+        is_geography: bool,
+    ) -> Result<(), String> {
+        validate_identifier(geom_col, "geom_column")?;
+        let q = format!("\"{}\"", geom_col);
+
+        let stats_sql = format!(
+            "SELECT COALESCE(COUNT(*) FILTER (WHERE {q} IS NOT NULL), 0)::bigint, COUNT(*)::bigint FROM ({}) AS __precheck_base",
+            sql
+        );
+        let row = conn
+            .query_one(&stats_sql, &[])
+            .map_err(|e| format!("PostGIS input precheck (row counts) failed: {}", e))?;
+        let nn: i64 = row.get(0);
+        let tot: i64 = row.get(1);
+        if tot == 0 {
+            return Err("PostGIS query returned no rows.".to_string());
+        }
+        if nn == 0 {
+            return Err(format!(
+                "PostGIS query has no non-null geometries in column '{}'.",
+                geom_col
+            ));
+        }
+
+        let bad_srid_sql = format!(
+            "SELECT EXISTS (SELECT 1 FROM ({}) AS __t WHERE {q} IS NOT NULL AND ST_SRID({q}) = 0 LIMIT 1)",
+            sql
+        );
+        let row = conn
+            .query_one(&bad_srid_sql, &[])
+            .map_err(|e| format!("PostGIS input precheck (SRID) failed: {}", e))?;
+        if row.get::<_, bool>(0) {
+            return Err(format!(
+                "Geometry column '{}' contains rows with SRID=0 (unknown). Use ST_SetSRID / fix metadata, or exclude those rows.",
+                geom_col
+            ));
+        }
+
+        if !is_geography {
+            let invalid_sql = format!(
+                "SELECT EXISTS (
+                    SELECT 1 FROM (
+                        SELECT {q} AS __g FROM ({}) AS __b WHERE {q} IS NOT NULL LIMIT 50000
+                    ) AS __s
+                    WHERE NOT ST_IsValid(__g)
+                    LIMIT 1
+                )",
+                sql
+            );
+            let row = conn
+                .query_one(&invalid_sql, &[])
+                .map_err(|e| format!("PostGIS input precheck (validity sample) failed: {}", e))?;
+            if row.get::<_, bool>(0) {
+                return Err(format!(
+                    "Sample (up to 50000 rows) contains invalid geometries in '{}'. Consider ST_MakeValid or filtering.",
+                    geom_col
+                ));
+            }
+        }
+
+        Ok(())
     }
 
     fn build_prop_columns(
@@ -285,6 +372,36 @@ mod postgis_impl {
         postgis_query_to_layers_with_geom(conn_str, sql, layer_name, min_zoom, max_zoom, batch_size, None)
     }
 
+    pub fn postgis_query_count_with_config(
+        config: &PostgisConfig,
+        sql: &str,
+    ) -> Result<u64, String> {
+        let mut conn = connect_with_config(config)?;
+        let count_sql = format!("SELECT COUNT(*) FROM ({}) AS __freestiler_count", sql);
+        let row = conn
+            .query_one(&count_sql, &[])
+            .map_err(|e| format!("Cannot count PostGIS query rows: {}", e))?;
+        let count: i64 = row.get(0);
+        Ok(count.max(0) as u64)
+    }
+
+    pub fn postgis_query_exceeds_with_config(
+        config: &PostgisConfig,
+        sql: &str,
+        threshold: u64,
+    ) -> Result<bool, String> {
+        let mut conn = connect_with_config(config)?;
+        let probe_sql = format!(
+            "SELECT EXISTS (SELECT 1 FROM ({}) AS __freestiler_probe OFFSET {} LIMIT 1)",
+            sql, threshold
+        );
+        let row = conn
+            .query_one(&probe_sql, &[])
+            .map_err(|e| format!("Cannot probe PostGIS query size: {}", e))?;
+        let exceeds: bool = row.get(0);
+        Ok(exceeds)
+    }
+
     pub fn postgis_query_to_layers_with_config(
         config: &PostgisConfig,
         sql: &str,
@@ -301,23 +418,71 @@ mod postgis_impl {
             validate_identifier(gc, "geom_column")?;
         }
 
-        debug!("Discovering columns for query: {}", sql);
-        let columns = discover_columns_via_prepare(&mut conn, sql)?;
-        debug!("Found {} columns: {:?}", columns.len(), columns.iter().map(|c| (&c.name, &c.type_name)).collect::<Vec<_>>());
+        let prepared = prepare_query_plan(&mut conn, sql, geom_column)?;
 
-        let (geom_col_name, source_srid) = detect_geom_column_and_srid(&mut conn, &columns, sql, geom_column)?;
+        let batch_size = config.batch_size.or(Some(config.effective_batch_size()));
+        let features = if let Some(batch) = batch_size {
+            info!("Using cursor-based batched reading (batch_size={})", batch);
+            cursor_batch_read(&mut conn, &prepared.full_sql, &prepared.prop_cols, batch)?
+        } else {
+            debug!("Using single-shot read (no cursor)");
+            single_read(&mut conn, &prepared.full_sql, &prepared.prop_cols)?
+        };
+
+        if features.is_empty() {
+            return Err("No valid features found in query result".to_string());
+        }
+
+        info!("PostGIS query returned {} features for layer '{}'", features.len(), layer_name);
+
+        Ok(vec![LayerData {
+            name: layer_name.to_string(),
+            features,
+            prop_names: prepared.schema.prop_names,
+            prop_types: prepared.schema.prop_types,
+            min_zoom,
+            max_zoom,
+        }])
+    }
+
+    struct PreparedPostgisQuery {
+        full_sql: String,
+        prop_cols: Vec<(usize, PgValueKind)>,
+        schema: PostgisLayerSchema,
+    }
+
+    fn prepare_query_plan(
+        conn: &mut Client,
+        sql: &str,
+        geom_column: Option<&str>,
+    ) -> Result<PreparedPostgisQuery, String> {
+        debug!("Discovering columns for query: {}", sql);
+        let columns = discover_columns_via_prepare(conn, sql)?;
+        debug!(
+            "Found {} columns: {:?}",
+            columns.len(),
+            columns.iter().map(|c| (&c.name, &c.type_name)).collect::<Vec<_>>()
+        );
+
+        let (geom_col_name, source_srid) = detect_geom_column_and_srid(conn, &columns, sql, geom_column)?;
+        let is_geography = columns.iter().any(|c| {
+            c.name == geom_col_name && c.type_name.to_lowercase().contains("geography")
+        });
+        precheck_postgis_layer(conn, sql, &geom_col_name, is_geography)?;
         debug!("Detected geometry column '{}' with SRID {:?}", geom_col_name, source_srid);
 
         let _ = conn.execute("SET default_transaction_read_only = on", &[]);
         debug!("Set PostgreSQL session to read-only mode");
 
         let needs_transform = match source_srid {
-            None | Some(0) | Some(4326) => {
-                if source_srid.is_none() || source_srid == Some(0) {
-                    warn!("SRID is unknown for geometry column '{}', assuming WGS84 (EPSG:4326)", geom_col_name);
-                }
-                false
+            None | Some(0) => {
+                return Err(format!(
+                    "SRID is unknown (SRID=0) for geometry column '{}'. \
+                     Please fix your source data (e.g. ST_SetSRID) or return a geometry with a valid SRID.",
+                    geom_col_name
+                ));
             }
+            Some(4326) => false,
             Some(srid) => {
                 info!("Source SRID is {}, will transform to EPSG:4326", srid);
                 true
@@ -332,41 +497,256 @@ mod postgis_impl {
 
         let prop_cols = build_prop_columns(&columns, &geom_col_name);
         let prop_names: Vec<String> = prop_cols.iter().map(|&(idx, _)| columns[idx].name.clone()).collect();
-        let prop_types: Vec<String> = prop_cols.iter().map(|&(idx, _)| pg_type_to_property_type(&columns[idx].type_name)).collect();
+        let prop_types: Vec<String> = prop_cols
+            .iter()
+            .map(|&(idx, _)| pg_type_to_property_type(&columns[idx].type_name))
+            .collect();
 
         let geom_col_lower = geom_col_name.to_lowercase();
         let select_cols: Vec<String> = columns
             .iter()
             .enumerate()
             .filter(|(_i, c)| c.name.to_lowercase() != geom_col_lower)
-            .map(|(_i, c)| format!("\"{}\"" , c.name))
+            .map(|(_i, c)| format!("\"{}\"", c.name))
             .chain(std::iter::once(format!("{} AS \"{}\"", geom_expr, WKB_ALIAS)))
             .collect();
         let full_sql = format!("SELECT {} FROM ({}) AS __t", select_cols.join(", "), sql);
 
+        Ok(PreparedPostgisQuery {
+            full_sql,
+            prop_cols,
+            schema: PostgisLayerSchema {
+                geom_column: geom_col_name,
+                prop_names,
+                prop_types,
+                source_srid,
+            },
+        })
+    }
+
+    pub fn postgis_query_each_batch_with_config<F>(
+        config: &PostgisConfig,
+        sql: &str,
+        geom_column: Option<&str>,
+        mut on_batch: F,
+    ) -> Result<PostgisLayerSchema, String>
+    where
+        F: FnMut(Vec<Feature>) -> Result<(), String>,
+    {
+        info!("Connecting to PostGIS: {}", crate::tiler::mask_conn_str(&config.conn_str));
+        let mut conn = connect_with_config(config)?;
+
+        if let Some(ref gc) = geom_column {
+            validate_identifier(gc, "geom_column")?;
+        }
+
+        let prepared = prepare_query_plan(&mut conn, sql, geom_column)?;
+        let batch_size = config.effective_batch_size();
+
+        conn.execute("BEGIN", &[])
+            .map_err(|e| format!("Cannot start transaction: {}", e))?;
+
+        let result = (|| -> Result<(), String> {
+            conn.execute(&format!("DECLARE {} CURSOR FOR {}", CURSOR_NAME, prepared.full_sql), &[])
+                .map_err(|e| format!("Cannot declare cursor: {}", e))?;
+
+            let mut next_id: u64 = 1;
+            loop {
+                let fetch_sql = format!("FETCH {} FROM {}", batch_size, CURSOR_NAME);
+                let rows = conn
+                    .query(&fetch_sql, &[])
+                    .map_err(|e| format!("Cursor fetch error: {}", e))?;
+
+                if rows.is_empty() {
+                    break;
+                }
+
+                let batch_features = parse_rows_parallel(&rows, &prepared.prop_cols, next_id)?;
+                next_id += batch_features.len() as u64;
+                on_batch(batch_features)?;
+            }
+
+            let _ = conn.execute(&format!("CLOSE {}", CURSOR_NAME), &[]);
+            Ok(())
+        })();
+
+        match &result {
+            Ok(_) => {
+                conn.execute("COMMIT", &[])
+                    .map_err(|e| format!("Cannot commit transaction: {}", e))?;
+            }
+            Err(_) => {
+                let _ = conn.execute("ROLLBACK", &[]);
+            }
+        }
+
+        result?;
+        Ok(prepared.schema)
+    }
+
+    pub fn postgis_probe_and_maybe_load_layers_with_config(
+        config: &PostgisConfig,
+        sql: &str,
+        layer_name: &str,
+        min_zoom: u8,
+        max_zoom: u8,
+        geom_column: Option<&str>,
+        threshold: u64,
+    ) -> Result<(bool, Option<Vec<LayerData>>), String> {
+        let mut conn = connect_with_config(config)?;
+        if let Some(ref gc) = geom_column {
+            validate_identifier(gc, "geom_column")?;
+        }
+
+        // Probe using source SQL with DB-side offset/exists.
+        let probe_sql = format!(
+            "SELECT EXISTS (SELECT 1 FROM ({}) AS __freestiler_probe OFFSET {} LIMIT 1)",
+            sql, threshold
+        );
+        let row = conn
+            .query_one(&probe_sql, &[])
+            .map_err(|e| format!("Cannot probe PostGIS query size: {}", e))?;
+        let exceeds: bool = row.get(0);
+        if exceeds {
+            return Ok((true, None));
+        }
+
+        let prepared = prepare_query_plan(&mut conn, sql, geom_column)?;
         let batch_size = config.batch_size.or(Some(config.effective_batch_size()));
         let features = if let Some(batch) = batch_size {
-            info!("Using cursor-based batched reading (batch_size={})", batch);
-            cursor_batch_read(&mut conn, &full_sql, &prop_cols, batch)?
+            cursor_batch_read(&mut conn, &prepared.full_sql, &prepared.prop_cols, batch)?
         } else {
-            debug!("Using single-shot read (no cursor)");
-            single_read(&mut conn, &full_sql, &prop_cols)?
+            single_read(&mut conn, &prepared.full_sql, &prepared.prop_cols)?
         };
 
         if features.is_empty() {
             return Err("No valid features found in query result".to_string());
         }
 
-        info!("PostGIS query returned {} features for layer '{}'", features.len(), layer_name);
-
-        Ok(vec![LayerData {
+        let layers = vec![LayerData {
             name: layer_name.to_string(),
             features,
-            prop_names,
-            prop_types,
+            prop_names: prepared.schema.prop_names,
+            prop_types: prepared.schema.prop_types,
             min_zoom,
             max_zoom,
-        }])
+        }];
+        Ok((false, Some(layers)))
+    }
+
+    impl PostgisBatchScanner {
+        pub fn new(
+            config: &PostgisConfig,
+            sql: &str,
+            geom_column: Option<&str>,
+        ) -> Result<Self, String> {
+            info!("Connecting to PostGIS: {}", crate::tiler::mask_conn_str(&config.conn_str));
+            let mut conn = connect_with_config(config)?;
+            if let Some(ref gc) = geom_column {
+                validate_identifier(gc, "geom_column")?;
+            }
+            let prepared = prepare_query_plan(&mut conn, sql, geom_column)?;
+            Ok(Self {
+                conn,
+                full_sql: prepared.full_sql,
+                prop_cols: prepared.prop_cols,
+                schema: prepared.schema,
+                batch_size: config.effective_batch_size(),
+                temp_snapshot_table: None,
+            })
+        }
+
+        pub fn schema(&self) -> &PostgisLayerSchema {
+            &self.schema
+        }
+
+        pub fn scan_batches<F>(&mut self, mut on_batch: F) -> Result<(), String>
+        where
+            F: FnMut(Vec<Feature>) -> Result<(), String>,
+        {
+            self.conn
+                .execute("BEGIN", &[])
+                .map_err(|e| format!("Cannot start transaction: {}", e))?;
+
+            let result = (|| -> Result<(), String> {
+                self.conn
+                    .execute(&format!("DECLARE {} CURSOR FOR {}", CURSOR_NAME, self.full_sql), &[])
+                    .map_err(|e| format!("Cannot declare cursor: {}", e))?;
+
+                let mut next_id: u64 = 1;
+                loop {
+                    let fetch_sql = format!("FETCH {} FROM {}", self.batch_size, CURSOR_NAME);
+                    let rows = self
+                        .conn
+                        .query(&fetch_sql, &[])
+                        .map_err(|e| format!("Cursor fetch error: {}", e))?;
+                    if rows.is_empty() {
+                        break;
+                    }
+                    let batch_features = parse_rows_parallel(&rows, &self.prop_cols, next_id)?;
+                    next_id += batch_features.len() as u64;
+                    on_batch(batch_features)?;
+                }
+                let _ = self.conn.execute(&format!("CLOSE {}", CURSOR_NAME), &[]);
+                Ok(())
+            })();
+
+            match &result {
+                Ok(_) => {
+                    self.conn
+                        .execute("COMMIT", &[])
+                        .map_err(|e| format!("Cannot commit transaction: {}", e))?;
+                }
+                Err(_) => {
+                    let _ = self.conn.execute("ROLLBACK", &[]);
+                }
+            }
+
+            result
+        }
+
+        pub fn materialize_temp_snapshot(&mut self) -> Result<(), String> {
+            if self.temp_snapshot_table.is_some() {
+                return Ok(());
+            }
+
+            let _ = self
+                .conn
+                .execute("SET default_transaction_read_only = off", &[]);
+            let table_name = format!("__freestiler_pg_snap_{}", unique_suffix());
+            let create_sql = format!(
+                "CREATE TEMP TABLE {} AS {}",
+                table_name, self.full_sql
+            );
+            self.conn
+                .execute(&create_sql, &[])
+                .map_err(|e| format!("Cannot materialize PostGIS temp snapshot: {}", e))?;
+
+            // Subsequent scans read from the temp table, avoiding repeated
+            // execution of the original source SQL and geometry transforms.
+            self.full_sql = format!("SELECT * FROM {}", table_name);
+            self.temp_snapshot_table = Some(table_name);
+            let _ = self
+                .conn
+                .execute("SET default_transaction_read_only = on", &[]);
+            Ok(())
+        }
+    }
+
+    impl Drop for PostgisBatchScanner {
+        fn drop(&mut self) {
+            if let Some(ref t) = self.temp_snapshot_table {
+                let _ = self.conn.execute(&format!("DROP TABLE IF EXISTS {}", t), &[]);
+            }
+        }
+    }
+
+    fn unique_suffix() -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        format!("{}_{}", std::process::id(), nanos)
     }
 
     pub fn postgis_query_to_layers_with_geom(
@@ -389,7 +769,7 @@ mod postgis_impl {
         prop_cols: &[(usize, PgValueKind)],
     ) -> Result<Vec<Feature>, String> {
         let rows = conn.query(sql, &[]).map_err(|e| format!("Query error: {}", e))?;
-        parse_rows_parallel(&rows, prop_cols)
+        parse_rows_parallel(&rows, prop_cols, 1)
     }
 
     fn cursor_batch_read(
@@ -406,6 +786,7 @@ mod postgis_impl {
                 .map_err(|e| format!("Cannot declare cursor: {}", e))?;
 
             let mut all_features = Vec::new();
+            let mut next_id: u64 = 1;
 
             loop {
                 let fetch_sql = format!("FETCH {} FROM {}", batch_size, CURSOR_NAME);
@@ -416,8 +797,9 @@ mod postgis_impl {
                     break;
                 }
 
-                let mut batch_features = parse_rows_parallel(&rows, prop_cols)?;
+                let mut batch_features = parse_rows_parallel(&rows, prop_cols, next_id)?;
                 debug!("Cursor batch: fetched {} features", batch_features.len());
+                next_id += batch_features.len() as u64;
                 all_features.append(&mut batch_features);
             }
 
@@ -442,6 +824,7 @@ mod postgis_impl {
     fn parse_rows_parallel(
         rows: &[Row],
         prop_cols: &[(usize, PgValueKind)],
+        start_id: u64,
     ) -> Result<Vec<Feature>, String> {
         if rows.is_empty() {
             return Ok(Vec::new());
@@ -485,7 +868,7 @@ mod postgis_impl {
                 }
 
                 Some(Feature {
-                    id: Some((idx + 1) as u64),
+                    id: Some(start_id + idx as u64),
                     geometry,
                     properties,
                 })
@@ -627,4 +1010,9 @@ mod postgis_impl {
 }
 
 #[cfg(feature = "postgis")]
-pub use postgis_impl::{postgis_query_to_layers, postgis_query_to_layers_with_geom, postgis_query_to_layers_with_config, PostgisConfig};
+pub use postgis_impl::{
+    postgis_query_count_with_config, postgis_query_each_batch_with_config,
+    postgis_query_exceeds_with_config, postgis_query_to_layers,
+    postgis_query_to_layers_with_geom, postgis_query_to_layers_with_config, PostgisConfig,
+    PostgisBatchScanner, PostgisLayerSchema, postgis_probe_and_maybe_load_layers_with_config,
+};

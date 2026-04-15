@@ -674,7 +674,8 @@ def freestile_postgis(
     output : str, Path, or dict
         Output destination. If a string/Path, writes a PMTiles file.
         If a dict with keys ``"uri"``, ``"database"``, ``"collection"``,
-        writes to MongoDB.
+        writes to MongoDB. Optional Mongo tuning keys: ``"flush_min_tiles"``,
+        ``"flush_max_bytes"`` (large-data path buffer before writing).
     layer_name : str, optional
         Name for the tile layer. If None, derived from the output filename.
     tile_format : str
@@ -734,6 +735,13 @@ def freestile_postgis(
         mongo_uri = output.get("uri", "")
         mongo_db = output.get("database", "")
         mongo_coll = output.get("collection", "")
+        mongo_batch_size = output.get("batch_size", None)
+        mongo_write_concurrency = output.get("write_concurrency", None)
+        mongo_create_indexes = output.get("create_indexes", None)
+        force_large_mode = output.get("large_mode", None)
+        large_mode_threshold = output.get("large_mode_threshold", None)
+        mongo_flush_min_tiles = output.get("flush_min_tiles", None)
+        mongo_flush_max_bytes = output.get("flush_max_bytes", None)
         if not mongo_uri or not mongo_db or not mongo_coll:
             raise ValueError(
                 "MongoDB output dict must contain 'uri', 'database', and 'collection' keys."
@@ -765,6 +773,13 @@ def freestile_postgis(
             batch_size=batch_size,
             upsert=upsert,
             geom_column=geom_column,
+            mongo_batch_size=mongo_batch_size,
+            mongo_write_concurrency=mongo_write_concurrency,
+            mongo_create_indexes=mongo_create_indexes,
+            force_large_mode=force_large_mode,
+            large_mode_threshold=large_mode_threshold,
+            mongo_flush_min_tiles=mongo_flush_min_tiles,
+            mongo_flush_max_bytes=mongo_flush_max_bytes,
         )
         return {"status": "ok", "result": result}
     else:
