@@ -304,14 +304,7 @@ pub use geoparquet_impl::parquet_to_layers;
 #[cfg(feature = "duckdb")]
 mod duckdb_impl {
     use super::*;
-
-    #[derive(Clone, Copy)]
-    enum DuckDbValueKind {
-        String,
-        Int,
-        Double,
-        Bool,
-    }
+    use crate::duckdb_util::{self, DuckDbValueKind};
 
     pub fn duckdb_file_to_layers(
         path: &str,
@@ -343,7 +336,6 @@ mod duckdb_impl {
         conn.execute_batch("INSTALL spatial; LOAD spatial;")
             .map_err(|e| format!("Cannot load spatial extension: {}", e))?;
 
-        // Discover column names and geometry column via DESCRIBE
         let discover_sql = format!("DESCRIBE ({})", sql);
         let mut discover_stmt = conn
             .prepare(&discover_sql)
@@ -391,11 +383,10 @@ mod duckdb_impl {
             }
             prop_names.push(name.clone());
             prop_col_indices.push(i);
-            prop_types.push(duckdb_type_to_property_type(dtype));
-            prop_value_kinds.push(duckdb_type_to_value_kind(dtype));
+            prop_types.push(duckdb_util::duckdb_type_to_property_type(dtype));
+            prop_value_kinds.push(duckdb_util::duckdb_type_to_value_kind(dtype));
         }
 
-        // Detect source CRS via ST_SRID on the first non-null geometry
         let srid_sql = format!(
             "SELECT ST_SRID(\"{}\") AS __srid FROM ({}) AS __t WHERE \"{}\" IS NOT NULL LIMIT 1",
             geom_col_name, sql, geom_col_name
@@ -404,9 +395,7 @@ mod duckdb_impl {
             .query_row(&srid_sql, params![], |row| row.get::<_, String>(0))
             .ok();
 
-        // Build geometry expression: reproject if not already WGS84
         let geom_expr = match source_srid.as_deref() {
-            // Already WGS84 or unknown — use as-is
             None | Some("EPSG:4326") | Some("") => {
                 format!("ST_AsWKB(\"{}\")", geom_col_name)
             }
@@ -442,7 +431,7 @@ mod duckdb_impl {
 
             let mut properties = Vec::with_capacity(prop_names.len());
             for (&col_idx, &kind) in prop_col_indices.iter().zip(prop_value_kinds.iter()) {
-                properties.push(extract_value(row, col_idx, kind));
+                properties.push(duckdb_util::extract_value(row, col_idx, kind));
             }
 
             features.push(Feature {
@@ -464,73 +453,6 @@ mod duckdb_impl {
             min_zoom,
             max_zoom,
         }])
-    }
-
-    fn extract_value(row: &duckdb::Row, col_idx: usize, kind: DuckDbValueKind) -> PropertyValue {
-        match kind {
-            DuckDbValueKind::String => row
-                .get::<_, Option<String>>(col_idx)
-                .ok()
-                .flatten()
-                .map(PropertyValue::String)
-                .unwrap_or(PropertyValue::Null),
-            DuckDbValueKind::Int => row
-                .get::<_, Option<i64>>(col_idx)
-                .ok()
-                .flatten()
-                .map(PropertyValue::Int)
-                .unwrap_or(PropertyValue::Null),
-            DuckDbValueKind::Double => row
-                .get::<_, Option<f64>>(col_idx)
-                .ok()
-                .flatten()
-                .map(|v| {
-                    if v.is_nan() {
-                        PropertyValue::Null
-                    } else {
-                        PropertyValue::Double(v)
-                    }
-                })
-                .unwrap_or(PropertyValue::Null),
-            DuckDbValueKind::Bool => row
-                .get::<_, Option<bool>>(col_idx)
-                .ok()
-                .flatten()
-                .map(PropertyValue::Bool)
-                .unwrap_or(PropertyValue::Null),
-        }
-    }
-
-    fn duckdb_type_to_property_type(dtype: &str) -> String {
-        match duckdb_type_to_value_kind(dtype) {
-            DuckDbValueKind::String => "character".to_string(),
-            DuckDbValueKind::Int => "integer".to_string(),
-            DuckDbValueKind::Double => "numeric".to_string(),
-            DuckDbValueKind::Bool => "logical".to_string(),
-        }
-    }
-
-    fn duckdb_type_to_value_kind(dtype: &str) -> DuckDbValueKind {
-        let dt = dtype.trim().to_uppercase();
-        if matches!(dt.as_str(), "BOOLEAN" | "BOOL" | "LOGICAL") {
-            DuckDbValueKind::Bool
-        } else if matches!(
-            dt.as_str(),
-            "TINYINT"
-                | "SMALLINT"
-                | "INTEGER"
-                | "INT"
-                | "BIGINT"
-                | "UTINYINT"
-                | "USMALLINT"
-                | "UINTEGER"
-        ) {
-            DuckDbValueKind::Int
-        } else if matches!(dt.as_str(), "REAL" | "FLOAT" | "DOUBLE") || dt.starts_with("DECIMAL") {
-            DuckDbValueKind::Double
-        } else {
-            DuckDbValueKind::String
-        }
     }
 }
 

@@ -175,7 +175,10 @@ fn point_coords(geom: &Geometry) -> (f64, f64) {
             if mp.0.is_empty() {
                 (0.0, 0.0)
             } else {
-                (mp.0[0].x(), mp.0[0].y())
+                let n = mp.0.len() as f64;
+                let sum_x: f64 = mp.0.iter().map(|p| p.x()).sum();
+                let sum_y: f64 = mp.0.iter().map(|p| p.y()).sum();
+                (sum_x / n, sum_y / n)
             }
         }
         _ => (0.0, 0.0),

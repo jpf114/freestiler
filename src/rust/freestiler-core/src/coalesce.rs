@@ -61,6 +61,26 @@ fn property_hash(props: &[PropertyValue]) -> u64 {
     hasher.finish()
 }
 
+fn properties_eq(a: &[PropertyValue], b: &[PropertyValue]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    for (pa, pb) in a.iter().zip(b.iter()) {
+        let eq = match (pa, pb) {
+            (PropertyValue::String(sa), PropertyValue::String(sb)) => sa == sb,
+            (PropertyValue::Int(ia), PropertyValue::Int(ib)) => ia == ib,
+            (PropertyValue::Double(da), PropertyValue::Double(db)) => da.to_bits() == db.to_bits(),
+            (PropertyValue::Bool(ba), PropertyValue::Bool(bb)) => ba == bb,
+            (PropertyValue::Null, PropertyValue::Null) => true,
+            _ => false,
+        };
+        if !eq {
+            return false;
+        }
+    }
+    true
+}
+
 /// Merge line features that share properties and endpoints.
 /// Uses an endpoint adjacency graph to chain connected line segments.
 fn merge_lines(lines: Vec<Feature>) -> Vec<Feature> {
@@ -68,11 +88,18 @@ fn merge_lines(lines: Vec<Feature>) -> Vec<Feature> {
         return Vec::new();
     }
 
-    // Group by property hash
     let mut groups: HashMap<u64, Vec<Feature>> = HashMap::new();
     for f in lines {
         let key = property_hash(&f.properties);
-        groups.entry(key).or_default().push(f);
+        let group = groups.entry(key).or_default();
+        if let Some(first) = group.first() {
+            if !properties_eq(&f.properties, &first.properties) {
+                let alt_key = property_hash(&f.properties).wrapping_add(1);
+                groups.entry(alt_key).or_default().push(f);
+                continue;
+            }
+        }
+        group.push(f);
     }
 
     let mut result = Vec::new();
@@ -234,11 +261,18 @@ fn group_polygons(polygons: Vec<Feature>) -> Vec<Feature> {
         return Vec::new();
     }
 
-    // Group by property hash
     let mut groups: HashMap<u64, Vec<Feature>> = HashMap::new();
     for f in polygons {
         let key = property_hash(&f.properties);
-        groups.entry(key).or_default().push(f);
+        let group = groups.entry(key).or_default();
+        if let Some(first) = group.first() {
+            if !properties_eq(&f.properties, &first.properties) {
+                let alt_key = property_hash(&f.properties).wrapping_add(1);
+                groups.entry(alt_key).or_default().push(f);
+                continue;
+            }
+        }
+        group.push(f);
     }
 
     let mut result = Vec::new();
