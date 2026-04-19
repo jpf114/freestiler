@@ -17,8 +17,6 @@ mod postgis_impl {
 
     const WKB_ALIAS: &str = "__wkb";
     const CURSOR_NAME: &str = "__freestiler_cursor";
-    const DEFAULT_BATCH_SIZE: usize = 10000;
-
     #[derive(Clone, Copy, Debug)]
     enum PgValueKind {
         String,
@@ -257,7 +255,7 @@ mod postgis_impl {
             .collect();
         let full_sql = format!("SELECT {} FROM ({}) AS __t", select_cols.join(", "), sql);
 
-        let effective_batch_size = batch_size.or(Some(DEFAULT_BATCH_SIZE));
+        let effective_batch_size = effective_batch_size(batch_size);
         let features = if let Some(batch) = effective_batch_size {
             info!("Using cursor-based batched reading (batch_size={})", batch);
             cursor_batch_read(&mut conn, &full_sql, &prop_cols, batch)?
@@ -426,6 +424,10 @@ mod postgis_impl {
         }
     }
 
+    fn effective_batch_size(batch_size: Option<usize>) -> Option<usize> {
+        batch_size.filter(|size| *size > 0)
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -499,6 +501,13 @@ mod postgis_impl {
             assert!(validate_identifier("col; DROP TABLE", "test").is_err());
             assert!(validate_identifier("col-name", "test").is_err());
             assert!(validate_identifier("col name", "test").is_err());
+        }
+
+        #[test]
+        fn test_effective_batch_size_preserves_none() {
+            assert_eq!(effective_batch_size(None), None);
+            assert_eq!(effective_batch_size(Some(10000)), Some(10000));
+            assert_eq!(effective_batch_size(Some(0)), None);
         }
     }
 }
