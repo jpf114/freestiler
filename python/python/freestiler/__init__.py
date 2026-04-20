@@ -655,7 +655,7 @@ def freestile_postgis(
     simplification: bool = True,
     overwrite: bool = True,
     quiet: bool = False,
-    batch_size: int | None = None,
+    batch_size: int | None = 10000,
     upsert: bool = False,
     geom_column: str | None = None,
 ) -> Union[Path, dict]:
@@ -702,7 +702,8 @@ def freestile_postgis(
     quiet : bool
         Whether to suppress progress messages (default False).
     batch_size : int, optional
-        Batch size for cursor-based reading from PostGIS. Default is 10000.
+        Batch size for cursor-based reading from PostGIS. Use ``None`` or ``0``
+        to disable cursor batching and read in a single query. Default is 10000.
     upsert : bool
         For MongoDB output, use upsert mode to replace existing tiles at
         the same (z,x,y) coordinates (default False).

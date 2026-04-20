@@ -7,6 +7,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::duckdb_util::{self, DuckDbValueKind};
 use crate::engine::{ProgressReporter, TileConfig};
 use crate::pmtiles_writer::{self, LayerMeta, TileFormat};
 use crate::tiler::{Feature, Geometry, PropertyValue, TileCoord};
@@ -123,7 +124,7 @@ pub fn generate_pmtiles_from_duckdb_query(
 
             let mut properties = Vec::with_capacity(prepared.prop_names.len());
             for (col_idx, kind) in prepared.prop_value_kinds.iter().enumerate() {
-                properties.push(extract_value(row, 5 + col_idx, *kind));
+                properties.push(duckdb_util::extract_value(row, 5 + col_idx, *kind));
             }
 
             tile_features.push(Feature {
@@ -211,7 +212,7 @@ impl PreparedPointQuery {
                 .to_string()
         })?;
 
-        let geom_col_sql = quote_ident(&geom_col_name);
+        let geom_col_sql = duckdb_util::quote_ident(&geom_col_name);
         let srid_sql = format!(
             "SELECT ST_SRID({}) AS __srid FROM ({}) AS __freestiler_src WHERE {} IS NOT NULL LIMIT 1",
             geom_col_sql, sql, geom_col_sql
@@ -225,7 +226,7 @@ impl PreparedPointQuery {
             Some(src_crs) => format!(
                 "ST_Transform({}, {}, 'EPSG:4326')",
                 geom_col_sql,
-                quote_string(src_crs)
+                duckdb_util::quote_string(src_crs)
             ),
         };
 
@@ -236,7 +237,7 @@ impl PreparedPointQuery {
                 continue;
             }
             prop_names.push(name);
-            prop_value_kinds.push(duckdb_type_to_value_kind(&dtype));
+            prop_value_kinds.push(duckdb_util::duckdb_type_to_value_kind(&dtype));
         }
 
         Ok(Self {
@@ -256,7 +257,7 @@ impl PreparedPointQuery {
                 ", {}",
                 self.prop_names
                     .iter()
-                    .map(|name| quote_ident(name))
+                    .map(|name| duckdb_util::quote_ident(name))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -305,7 +306,7 @@ impl PreparedPointQuery {
                  THEN ROW_NUMBER() OVER (PARTITION BY __geom_type ORDER BY __morton, __src_rowid)
                END AS __morton_rank{}
              FROM __freestiler_mortonized",
-            quote_ident(&table_name),
+            duckdb_util::quote_ident(&table_name),
             self.geom_expr,
             prop_select,
             self.sql,
@@ -328,7 +329,7 @@ struct PointsTable {
 
 impl PointsTable {
     fn compute_stats(&self, conn: &Connection) -> Result<PointStats, String> {
-        let table = quote_ident(&self.name);
+        let table = duckdb_util::quote_ident(&self.name);
         let stats_sql = format!(
             "SELECT
                SUM(CASE WHEN __geom_type = 'POINT' THEN 1 ELSE 0 END) AS point_count,
@@ -378,12 +379,12 @@ impl PointsTable {
                 ", {}",
                 prop_names
                     .iter()
-                    .map(|name| quote_ident(name))
+                    .map(|name| duckdb_util::quote_ident(name))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
         };
-        let table = quote_ident(&self.name);
+        let table = duckdb_util::quote_ident(&self.name);
         let n = 1u64 << zoom;
         let max_idx = n - 1;
         let clamped_lat = "LEAST(GREATEST(__lat, -85.05112878), 85.05112878)";
@@ -581,80 +582,6 @@ fn spread_bits_sql(expr: &str) -> String {
     let step2 = format!("(({step1} | ({step1} << 4)) & 252645135)", step1 = step1);
     let step3 = format!("(({step2} | ({step2} << 2)) & 858993459)", step2 = step2);
     format!("(({step3} | ({step3} << 1)) & 1431655765)", step3 = step3)
-}
-
-#[derive(Clone, Copy)]
-enum DuckDbValueKind {
-    String,
-    Int,
-    Double,
-    Bool,
-}
-
-fn extract_value(row: &duckdb::Row, col_idx: usize, kind: DuckDbValueKind) -> PropertyValue {
-    match kind {
-        DuckDbValueKind::String => row
-            .get::<_, Option<String>>(col_idx)
-            .ok()
-            .flatten()
-            .map(PropertyValue::String)
-            .unwrap_or(PropertyValue::Null),
-        DuckDbValueKind::Int => row
-            .get::<_, Option<i64>>(col_idx)
-            .ok()
-            .flatten()
-            .map(PropertyValue::Int)
-            .unwrap_or(PropertyValue::Null),
-        DuckDbValueKind::Double => row
-            .get::<_, Option<f64>>(col_idx)
-            .ok()
-            .flatten()
-            .map(|v| {
-                if v.is_nan() {
-                    PropertyValue::Null
-                } else {
-                    PropertyValue::Double(v)
-                }
-            })
-            .unwrap_or(PropertyValue::Null),
-        DuckDbValueKind::Bool => row
-            .get::<_, Option<bool>>(col_idx)
-            .ok()
-            .flatten()
-            .map(PropertyValue::Bool)
-            .unwrap_or(PropertyValue::Null),
-    }
-}
-
-fn duckdb_type_to_value_kind(dtype: &str) -> DuckDbValueKind {
-    let dt = dtype.trim().to_uppercase();
-    if matches!(dt.as_str(), "BOOLEAN" | "BOOL" | "LOGICAL") {
-        DuckDbValueKind::Bool
-    } else if matches!(
-        dt.as_str(),
-        "TINYINT"
-            | "SMALLINT"
-            | "INTEGER"
-            | "INT"
-            | "BIGINT"
-            | "UTINYINT"
-            | "USMALLINT"
-            | "UINTEGER"
-    ) {
-        DuckDbValueKind::Int
-    } else if matches!(dt.as_str(), "REAL" | "FLOAT" | "DOUBLE") || dt.starts_with("DECIMAL") {
-        DuckDbValueKind::Double
-    } else {
-        DuckDbValueKind::String
-    }
-}
-
-fn quote_ident(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
-}
-
-fn quote_string(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn temp_file_path(stem: &str) -> PathBuf {

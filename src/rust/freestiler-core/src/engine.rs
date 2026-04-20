@@ -1,10 +1,17 @@
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::PathBuf;
 use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::error::{FreestilerError, Result};
 use crate::pmtiles_writer::TileFormat;
 use crate::tiler::{Feature, Geometry, LayerData, TileCoord};
 use crate::{clip, cluster, coalesce, drop, mlt, mvt, pmtiles_writer, simplify, tiler};
+use pmtiles2::util::tile_id;
+use pmtiles2::Entry;
 
 #[cfg(feature = "mongodb-out")]
 use crate::mongo_writer::MongoConfig;
@@ -386,13 +393,30 @@ pub fn generate_tiles(
     layers: &[LayerData],
     config: &TileConfig,
     reporter: &dyn ProgressReporter,
-) -> Result<Vec<(TileCoord, Vec<u8>)>, String> {
+) -> Result<Vec<(TileCoord, Vec<u8>)>> {
+    let mut all_tiles: Vec<(TileCoord, Vec<u8>)> = Vec::new();
+    process_tiles(layers, config, reporter, |coord, tile_bytes| {
+        all_tiles.push((coord, tile_bytes));
+        Ok(())
+    })?;
+    Ok(all_tiles)
+}
+
+fn process_tiles<F>(
+    layers: &[LayerData],
+    config: &TileConfig,
+    reporter: &dyn ProgressReporter,
+    mut on_tile: F,
+) -> Result<u64>
+where
+    F: FnMut(TileCoord, Vec<u8>) -> Result<()>,
+{
     let min_z = config.min_zoom;
     let max_z = config.max_zoom;
     let ctx = build_generation_context(layers, config);
 
-    let mut all_tiles: Vec<(TileCoord, Vec<u8>)> = Vec::new();
     let total_start = Instant::now();
+    let mut total_tiles = 0u64;
 
     for zoom in min_z..=max_z {
         let zoom_start = Instant::now();
@@ -404,7 +428,10 @@ pub fn generate_tiles(
         ));
 
         let n_encoded = zoom_tiles.len();
-        all_tiles.extend(zoom_tiles);
+        total_tiles += n_encoded as u64;
+        for (coord, tile_bytes) in zoom_tiles {
+            on_tile(coord, tile_bytes)?;
+        }
 
         let elapsed = zoom_start.elapsed().as_secs_f64();
         reporter.report(&format!(
@@ -415,11 +442,11 @@ pub fn generate_tiles(
 
     reporter.report(&format!(
         "  Total: {} tiles in {:.1}s",
-        all_tiles.len(),
+        total_tiles,
         total_start.elapsed().as_secs_f64()
     ));
 
-    Ok(all_tiles)
+    Ok(total_tiles)
 }
 
 pub fn generate_pmtiles(
@@ -427,38 +454,9 @@ pub fn generate_pmtiles(
     output_path: &str,
     config: &TileConfig,
     reporter: &dyn ProgressReporter,
-) -> Result<(), String> {
-    let bounds = compute_all_bounds(layers);
-
-    let use_cluster = config.cluster_distance.map_or(false, |d| d > 0.0);
-    let is_point_layer = detect_point_layers(layers);
-    let layer_metas = build_layer_metas(layers, &is_point_layer, use_cluster);
-
-    let all_tiles = generate_tiles(layers, config, reporter)?;
-
-    if all_tiles.is_empty() {
-        return Err("No tiles generated".to_string());
-    }
-
-    reporter.report(&format!(
-        "  Writing PMTiles archive ({} tiles) ...",
-        all_tiles.len()
-    ));
-    let write_start = Instant::now();
-    pmtiles_writer::write_pmtiles(
-        output_path,
-        all_tiles,
-        config.tile_format,
-        &layer_metas,
-        config.min_zoom,
-        config.max_zoom,
-        bounds,
-    )?;
-    reporter.report(&format!(
-        "  PMTiles write: {:.1}s",
-        write_start.elapsed().as_secs_f64()
-    ));
-
+) -> Result<()> {
+    let output = OutputTarget::Pmtiles { path: output_path.to_string() };
+    generate_tiles_to_target(layers, &output, config, reporter)?;
     Ok(())
 }
 
@@ -467,74 +465,14 @@ pub fn generate_tiles_to_target(
     output: &OutputTarget,
     config: &TileConfig,
     reporter: &dyn ProgressReporter,
-) -> Result<u64, String> {
+) -> Result<u64> {
     match output {
         OutputTarget::Pmtiles { path } => {
-            let bounds = compute_all_bounds(layers);
-            let use_cluster = config.cluster_distance.map_or(false, |d| d > 0.0);
-            let is_point_layer = detect_point_layers(layers);
-            let layer_metas = build_layer_metas(layers, &is_point_layer, use_cluster);
-
-            let all_tiles = generate_tiles(layers, config, reporter)?;
-
-            if all_tiles.is_empty() {
-                return Err("No tiles generated".to_string());
-            }
-
-            let tile_count = all_tiles.len() as u64;
-
-            reporter.report(&format!(
-                "  Writing PMTiles archive ({} tiles) ...",
-                all_tiles.len()
-            ));
-            let write_start = Instant::now();
-            pmtiles_writer::write_pmtiles(
-                path,
-                all_tiles,
-                config.tile_format,
-                &layer_metas,
-                config.min_zoom,
-                config.max_zoom,
-                bounds,
-            )?;
-            reporter.report(&format!(
-                "  PMTiles write: {:.1}s",
-                write_start.elapsed().as_secs_f64()
-            ));
-
-            Ok(tile_count)
+            generate_pmtiles_spooled(layers, path, config, reporter)
         }
         #[cfg(feature = "mongodb-out")]
         OutputTarget::MongoDB { config: mongo_cfg } => {
-            use crate::mongo_writer::MongoTileWriter;
-            let writer = MongoTileWriter::from_config(mongo_cfg)?;
-            let compress = mongo_cfg.effective_compress();
-            let create_indexes = mongo_cfg.effective_create_indexes();
-            if create_indexes {
-                if let Err(e) = writer.ensure_indexes() {
-                    if mongo_cfg.effective_index_fail_is_error() {
-                        return Err(e);
-                    }
-                    reporter.report(&format!("  MongoDB index creation warning: {}", e));
-                }
-            }
-            let all_tiles = generate_tiles(layers, config, reporter)?;
-            if all_tiles.is_empty() {
-                return Err("No tiles generated".to_string());
-            }
-            reporter.report(&format!(
-                "  Writing to MongoDB ({} tiles) ...",
-                all_tiles.len()
-            ));
-            let write_start = Instant::now();
-            let result = writer.write_tiles(&all_tiles, compress, Some(reporter))?;
-            reporter.report(&format!(
-                "  MongoDB write: {:.1}s ({} tiles, {} bytes)",
-                write_start.elapsed().as_secs_f64(),
-                result.tiles_written,
-                result.bytes_written
-            ));
-            Ok(all_tiles.len() as u64)
+            generate_mongo_streamed(layers, mongo_cfg, config, reporter)
         }
     }
 }
@@ -680,4 +618,257 @@ pub fn generate_postgis_query_to_mongo_by_zoom(
     }
 
     Ok(total_tiles_written)
+}
+
+fn generate_pmtiles_spooled(
+    layers: &[LayerData],
+    output_path: &str,
+    config: &TileConfig,
+    reporter: &dyn ProgressReporter,
+) -> Result<u64> {
+    let bounds = compute_all_bounds(layers);
+    let use_cluster = config.cluster_distance.map_or(false, |d| d > 0.0);
+    let is_point_layer = detect_point_layers(layers);
+    let layer_metas = build_layer_metas(layers, &is_point_layer, use_cluster);
+    let mut spool = TileSpool::new().map_err(FreestilerError::Other)?;
+
+    let tile_count = process_tiles(layers, config, reporter, |coord, tile_bytes| {
+        spool.write_tile(coord, &tile_bytes).map_err(FreestilerError::Other)
+    })?;
+
+    if tile_count == 0 {
+        return Err(FreestilerError::NoTilesGenerated);
+    }
+
+    reporter.report(&format!(
+        "  Writing PMTiles archive ({} tiles) ...",
+        tile_count
+    ));
+    let write_start = Instant::now();
+    let entries = std::mem::take(&mut spool.entries);
+    pmtiles_writer::write_pmtiles_from_spool(
+        output_path,
+        &spool.path,
+        entries,
+        config.tile_format,
+        &layer_metas,
+        config.min_zoom,
+        config.max_zoom,
+        bounds,
+    )
+    .map_err(FreestilerError::Other)?;
+    reporter.report(&format!(
+        "  PMTiles write: {:.1}s",
+        write_start.elapsed().as_secs_f64()
+    ));
+
+    Ok(tile_count)
+}
+
+#[cfg(feature = "mongodb-out")]
+fn generate_mongo_streamed(
+    layers: &[LayerData],
+    mongo_cfg: &MongoConfig,
+    config: &TileConfig,
+    reporter: &dyn ProgressReporter,
+) -> Result<u64> {
+    use crate::mongo_writer::{MongoTileWriter, MongoWriteResult};
+
+    let writer = MongoTileWriter::from_config(mongo_cfg).map_err(FreestilerError::Other)?;
+    if mongo_cfg.effective_create_indexes() {
+        if let Err(e) = writer.ensure_indexes() {
+            if mongo_cfg.effective_index_fail_is_error() {
+                return Err(FreestilerError::Other(e));
+            }
+            reporter.report(&format!("  MongoDB index creation failed (non-fatal): {}", e));
+        }
+    }
+
+    let compress = mongo_cfg.effective_compress();
+    let batch_size = mongo_cfg.effective_batch_size();
+    let write_start = Instant::now();
+    let mut batch: Vec<(TileCoord, Vec<u8>)> = Vec::with_capacity(batch_size);
+    let mut total_result = MongoWriteResult::default();
+    let mut tile_count = 0u64;
+
+    reporter.report("  Writing to MongoDB ...");
+
+    process_tiles(layers, config, reporter, |coord, tile_bytes| {
+        tile_count += 1;
+        batch.push((coord, tile_bytes));
+        if batch.len() >= batch_size {
+            flush_mongo_batch(&writer, &mut batch, compress, &mut total_result, reporter)?;
+        }
+        Ok(())
+    })?;
+
+    if tile_count == 0 {
+        return Err(FreestilerError::NoTilesGenerated);
+    }
+
+    flush_mongo_batch(&writer, &mut batch, compress, &mut total_result, reporter)?;
+
+    reporter.report(&format!(
+        "  MongoDB write: {:.1}s ({} tiles, {} bytes)",
+        write_start.elapsed().as_secs_f64(),
+        total_result.tiles_written,
+        total_result.bytes_written
+    ));
+
+    Ok(tile_count)
+}
+
+#[cfg(feature = "mongodb-out")]
+fn flush_mongo_batch(
+    writer: &crate::mongo_writer::MongoTileWriter,
+    batch: &mut Vec<(TileCoord, Vec<u8>)>,
+    compress: bool,
+    total_result: &mut crate::mongo_writer::MongoWriteResult,
+    reporter: &dyn ProgressReporter,
+) -> Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+
+    let result = writer
+        .write_tiles(batch, compress, Some(reporter))
+        .map_err(FreestilerError::Other)?;
+
+    total_result.tiles_written += result.tiles_written;
+    total_result.tiles_upserted += result.tiles_upserted;
+    total_result.tiles_failed += result.tiles_failed;
+    total_result.bytes_written += result.bytes_written;
+    batch.clear();
+    Ok(())
+}
+
+struct TileSpool {
+    path: PathBuf,
+    file: File,
+    offset: u64,
+    entries: Vec<Entry>,
+}
+
+impl TileSpool {
+    fn new() -> std::result::Result<Self, String> {
+        let path = temp_file_path("tiles");
+        let file = File::create(&path).map_err(|e| {
+            format!(
+                "Cannot create temporary tile spool {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        Ok(Self {
+            path,
+            file,
+            offset: 0,
+            entries: Vec::new(),
+        })
+    }
+
+    fn write_tile(&mut self, coord: TileCoord, bytes: &[u8]) -> std::result::Result<(), String> {
+        let compressed = pmtiles_writer::gzip_compress(bytes)?;
+        self.file
+            .write_all(&compressed)
+            .map_err(|e| format!("Cannot write tile spool: {}", e))?;
+
+        self.entries.push(Entry {
+            tile_id: tile_id(coord.z, coord.x as u64, coord.y as u64),
+            offset: self.offset,
+            length: compressed.len() as u32,
+            run_length: 1,
+        });
+        self.offset += compressed.len() as u64;
+        Ok(())
+    }
+}
+
+impl Drop for TileSpool {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn temp_file_path(stem: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("freestiler_{}_{}.tmp", stem, unique_suffix()))
+}
+
+fn unique_suffix() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{}_{}", std::process::id(), nanos)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pmtiles_writer::TileFormat;
+    use geo_types::Point;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn sample_layer() -> LayerData {
+        LayerData {
+            name: "points".to_string(),
+            features: vec![
+                Feature {
+                    id: Some(1),
+                    geometry: Geometry::Point(Point::new(-78.6, 35.8)),
+                    properties: vec![PropertyValue::String("a".to_string())],
+                },
+                Feature {
+                    id: Some(2),
+                    geometry: Geometry::Point(Point::new(-80.2, 36.1)),
+                    properties: vec![PropertyValue::String("b".to_string())],
+                },
+            ],
+            prop_names: vec!["name".to_string()],
+            prop_types: vec!["character".to_string()],
+            min_zoom: 0,
+            max_zoom: 2,
+        }
+    }
+
+    fn temp_pmtiles_path() -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!("freestiler_engine_test_{}_{}.pmtiles", std::process::id(), nanos))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn test_generate_tiles_to_target_writes_pmtiles_archive() {
+        let layer = sample_layer();
+        let output_path = temp_pmtiles_path();
+        let output = OutputTarget::Pmtiles {
+            path: output_path.clone(),
+        };
+        let config = TileConfig {
+            tile_format: TileFormat::Mvt,
+            min_zoom: 0,
+            max_zoom: 2,
+            base_zoom: None,
+            simplification: true,
+            drop_rate: None,
+            cluster_distance: None,
+            cluster_maxzoom: None,
+            coalesce: false,
+        };
+
+        let result = generate_tiles_to_target(&[layer], &output, &config, &SilentReporter)
+            .expect("PMTiles archive should be written");
+
+        assert!(result > 0);
+        let metadata = fs::metadata(&output_path).expect("output archive should exist");
+        assert!(metadata.len() > 0);
+
+        let _ = fs::remove_file(&output_path);
+    }
 }

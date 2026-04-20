@@ -2,7 +2,9 @@ pub mod clip;
 pub mod cluster;
 pub mod coalesce;
 pub mod drop;
+pub mod duckdb_util;
 pub mod engine;
+pub mod error;
 #[cfg(any(feature = "geoparquet", feature = "duckdb"))]
 pub mod file_input;
 #[cfg(feature = "mongodb-out")]

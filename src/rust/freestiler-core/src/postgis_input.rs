@@ -22,8 +22,6 @@ mod postgis_impl {
 
     const WKB_ALIAS: &str = "__wkb";
     const CURSOR_NAME: &str = "__freestiler_cursor";
-    const DEFAULT_BATCH_SIZE: usize = 10000;
-
     #[derive(Clone, Copy, Debug)]
     enum PgValueKind {
         String,
@@ -913,6 +911,10 @@ mod postgis_impl {
         }
     }
 
+    fn effective_batch_size(batch_size: Option<usize>) -> Option<usize> {
+        batch_size.filter(|size| *size > 0)
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -1005,6 +1007,13 @@ mod postgis_impl {
             assert!(c.use_ssl);
             assert_eq!(c.ssl_ca_file, Some("/path/to/ca.pem".to_string()));
             assert_eq!(c.effective_batch_size(), 5000);
+        }
+
+        #[test]
+        fn test_effective_batch_size_preserves_none() {
+            assert_eq!(effective_batch_size(None), None);
+            assert_eq!(effective_batch_size(Some(10000)), Some(10000));
+            assert_eq!(effective_batch_size(Some(0)), None);
         }
     }
 }
