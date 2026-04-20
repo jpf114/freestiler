@@ -1086,6 +1086,7 @@ fn rust_pmtiles_metadata(path: &str) -> String {
 /// @param mongo_create_indexes Whether to create MongoDB indexes (NA = default TRUE)
 /// @param force_large_mode Force large-data mode if TRUE/FALSE, NA = auto
 /// @param large_mode_threshold Feature threshold for auto large-mode switch (<=0 = default)
+/// @param streaming Use streaming pipeline for bounded memory (NA = no, TRUE = yes)
 /// @export
 #[extendr]
 fn rust_freestile_postgis_to_mongo(
@@ -1115,6 +1116,7 @@ fn rust_freestile_postgis_to_mongo(
     large_mode_threshold: i32,
     mongo_flush_min_tiles: i32,
     mongo_flush_max_mb: i32,
+    streaming: Nullable<bool>,
 ) -> String {
     #[cfg(not(all(feature = "postgis", feature = "mongodb-out")))]
     {
@@ -1125,7 +1127,7 @@ fn rust_freestile_postgis_to_mongo(
             do_coalesce, quiet, batch_size, upsert, geom_column,
             mongo_batch_size, mongo_write_concurrency, mongo_create_indexes,
             force_large_mode, large_mode_threshold,
-            mongo_flush_min_tiles, mongo_flush_max_mb,
+            mongo_flush_min_tiles, mongo_flush_max_mb, streaming,
         );
         return "Error: PostGIS + MongoDB support not compiled. Rebuild with both features enabled."
             .to_string();
@@ -1236,17 +1238,37 @@ fn rust_freestile_postgis_to_mongo(
                     threshold
                 ));
             }
-            match engine::generate_postgis_query_to_mongo_by_zoom(
-                &pg_config,
-                sql,
-                layer_name,
-                geom_col,
-                &mongo_config,
-                &config,
-                reporter.as_ref(),
-            ) {
-                Ok(count) => format!("{} tiles written to MongoDB", count),
-                Err(e) => format!("Error: {}", freestiler_core::tiler::mask_conn_str(&e)),
+            let use_streaming = streaming.into_option().unwrap_or(false);
+            if use_streaming {
+                if !quiet {
+                    reporter.report("  Using streaming pipeline for bounded memory usage");
+                }
+                match engine::generate_postgis_query_to_mongo_streaming(
+                    &pg_config,
+                    sql,
+                    layer_name,
+                    geom_col,
+                    &mongo_config,
+                    &config,
+                    None,
+                    reporter.as_ref(),
+                ) {
+                    Ok(count) => format!("{} tiles written to MongoDB", count),
+                    Err(e) => format!("Error: {}", freestiler_core::tiler::mask_conn_str(&e)),
+                }
+            } else {
+                match engine::generate_postgis_query_to_mongo_by_zoom(
+                    &pg_config,
+                    sql,
+                    layer_name,
+                    geom_col,
+                    &mongo_config,
+                    &config,
+                    reporter.as_ref(),
+                ) {
+                    Ok(count) => format!("{} tiles written to MongoDB", count),
+                    Err(e) => format!("Error: {}", freestiler_core::tiler::mask_conn_str(&e)),
+                }
             }
         }
     }

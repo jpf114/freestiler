@@ -5,9 +5,9 @@ use pmtiles2::Entry;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::duckdb_util::{self, DuckDbValueKind};
+use crate::tile_spool::{unique_suffix, TileSpool};
 use crate::engine::{ProgressReporter, TileConfig};
 use crate::pmtiles_writer::{self, LayerMeta, TileFormat};
 use crate::tiler::{Feature, Geometry, PropertyValue, TileCoord};
@@ -584,14 +584,4 @@ fn spread_bits_sql(expr: &str) -> String {
     format!("(({step3} | ({step3} << 1)) & 1431655765)", step3 = step3)
 }
 
-fn temp_file_path(stem: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("freestiler_{}_{}.tmp", stem, unique_suffix()))
-}
 
-fn unique_suffix() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{}_{}", std::process::id(), nanos)
-}

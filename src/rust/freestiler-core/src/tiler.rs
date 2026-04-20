@@ -22,6 +22,62 @@ pub enum Geometry {
     MultiPolygon(MultiPolygon<f64>),
 }
 
+impl From<geo_types::Geometry<f64>> for Geometry {
+    fn from(g: geo_types::Geometry<f64>) -> Self {
+        match g {
+            geo_types::Geometry::Point(p) => Geometry::Point(p),
+            geo_types::Geometry::MultiPoint(p) => Geometry::MultiPoint(p),
+            geo_types::Geometry::LineString(l) => Geometry::LineString(l),
+            geo_types::Geometry::MultiLineString(l) => Geometry::MultiLineString(l),
+            geo_types::Geometry::Polygon(p) => Geometry::Polygon(p),
+            geo_types::Geometry::MultiPolygon(p) => Geometry::MultiPolygon(p),
+            geo_types::Geometry::Rect(r) => Geometry::Polygon(r.to_polygon()),
+            geo_types::Geometry::Triangle(t) => Geometry::Polygon(t.to_polygon()),
+            geo_types::Geometry::GeometryCollection(gc) => {
+                let mut result: Option<Geometry> = None;
+                for g in gc {
+                    match g {
+                        geo_types::Geometry::Point(p) => {
+                            if result.is_none() {
+                                result = Some(Geometry::Point(p));
+                            }
+                        }
+                        geo_types::Geometry::MultiPoint(mp) => {
+                            if result.is_none() {
+                                result = Some(Geometry::MultiPoint(mp));
+                            }
+                        }
+                        geo_types::Geometry::LineString(l) => {
+                            if result.is_none() {
+                                result = Some(Geometry::LineString(l));
+                            }
+                        }
+                        geo_types::Geometry::MultiLineString(ml) => {
+                            if result.is_none() {
+                                result = Some(Geometry::MultiLineString(ml));
+                            }
+                        }
+                        geo_types::Geometry::Polygon(p) => {
+                            if result.is_none() {
+                                result = Some(Geometry::Polygon(p));
+                            }
+                        }
+                        geo_types::Geometry::MultiPolygon(mp) => {
+                            if result.is_none() {
+                                result = Some(Geometry::MultiPolygon(mp));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                result.unwrap_or_else(|| {
+                    Geometry::Point(Point::new(0.0, 0.0))
+                })
+            }
+        }
+    }
+}
+
 /// Property value types
 #[derive(Clone, Debug)]
 pub enum PropertyValue {
@@ -144,7 +200,7 @@ pub fn tile_morton_key(geom: &Geometry, west: f64, east: f64, south: f64, north:
 /// Buffer factor as a fraction of tile extent for tile assignment.
 /// Must match the BUFFER_FRACTION in clip.rs so features in the
 /// clip buffer zone are assigned to the tile.
-const ASSIGN_BUFFER_FRACTION: f64 = 0.05;
+pub const ASSIGN_BUFFER_FRACTION: f64 = 0.05;
 
 /// Assign features to tiles using optional geometry overrides for bbox calculation.
 /// When `geom_overrides[i]` is `Some(geom)`, uses that geometry's bbox instead of
@@ -192,6 +248,29 @@ pub fn assign_features_to_tiles_with_geoms(
     }
 
     tile_map
+}
+
+/// Assign features to tiles based on their geometry.
+///
+/// Returns a HashMap mapping tile coordinates to features.
+pub fn assign_features_to_tiles(
+    features: &[Feature],
+    zoom: u8,
+) -> HashMap<TileCoord, Vec<Feature>> {
+    let no_overrides: Vec<Option<Geometry>> = vec![None; features.len()];
+    let tile_indices = assign_features_to_tiles_with_geoms(features, &no_overrides, zoom);
+
+    // Convert indices to actual features
+    tile_indices
+        .into_iter()
+        .map(|(coord, indices)| {
+            let tile_features: Vec<Feature> = indices
+                .iter()
+                .filter_map(|&idx| features.get(idx).cloned())
+                .collect();
+            (coord, tile_features)
+        })
+        .collect()
 }
 
 /// Mask password in a connection URL/URI for safe display in logs.

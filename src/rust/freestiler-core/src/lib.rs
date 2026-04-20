@@ -15,14 +15,18 @@ pub mod pmtiles_writer;
 #[cfg(feature = "postgis")]
 pub mod postgis_input;
 pub mod simplify;
+pub mod tile_spool;
 #[cfg(any(feature = "geoparquet", feature = "duckdb", feature = "postgis"))]
 pub mod wkb;
 #[cfg(feature = "duckdb")]
 pub mod streaming;
+#[cfg(all(feature = "postgis", feature = "mongodb-out"))]
+pub mod streaming_pipeline;
 pub mod tiler;
 
 pub use geo;
 pub use geo_types;
+pub use tile_spool::{TileSpool, unique_suffix};
 
 #[cfg(feature = "mongodb-out")]
 pub use mongo_writer::MongoConfig;
@@ -35,3 +39,10 @@ pub use postgis_input::{
     postgis_query_exceeds_with_config, postgis_query_to_layers_with_geom, PostgisBatchScanner,
     PostgisConfig, PostgisLayerSchema, postgis_probe_and_maybe_load_layers_with_config,
 };
+
+#[cfg(all(feature = "postgis", feature = "mongodb-out"))]
+pub use streaming_pipeline::{stream_postgis_to_mongo, StreamingConfig, StreamingTilePipeline};
+
+// Re-export the streaming pipeline entry point from engine for convenience
+#[cfg(all(feature = "postgis", feature = "mongodb-out"))]
+pub use engine::generate_postgis_query_to_mongo_streaming;

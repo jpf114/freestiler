@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::tile_spool::unique_suffix;
 use crate::error::{FreestilerError, Result};
 use crate::pmtiles_writer::TileFormat;
 use crate::tiler::{Feature, Geometry, LayerData, TileCoord};
@@ -792,14 +793,6 @@ impl Drop for TileSpool {
 
 fn temp_file_path(stem: &str) -> PathBuf {
     std::env::temp_dir().join(format!("freestiler_{}_{}.tmp", stem, unique_suffix()))
-}
-
-fn unique_suffix() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{}_{}", std::process::id(), nanos)
 }
 
 #[cfg(test)]

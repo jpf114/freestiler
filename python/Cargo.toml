@@ -14,7 +14,7 @@ name = "_freestiler"
 crate-type = ["cdylib"]
 
 [features]
-default = ["geoparquet", "duckdb"]
+default = ["geoparquet", "duckdb", "postgis", "mongodb-out"]
 geoparquet = ["freestiler-core/geoparquet"]
 duckdb = ["freestiler-core/duckdb"]
 postgis = ["freestiler-core/postgis"]

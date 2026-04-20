@@ -13,7 +13,7 @@ publish = false
 default = []
 geoparquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:geozero"]
 duckdb = ["dep:duckdb", "dep:geozero"]
-postgis = ["dep:postgres", "dep:geozero", "dep:native-tls", "dep:postgres-native-tls"]
+postgis = ["dep:postgres", "dep:geozero", "dep:native-tls", "dep:postgres-native-tls", "dep:r2d2"]
 mongodb-out = ["dep:mongodb", "dep:bson", "dep:tokio", "dep:once_cell", "dep:futures"]
 fastpfor = ["dep:fastpfor"]
 fsst = ["dep:fsst-rs"]
@@ -70,6 +70,8 @@ futures = { version = "0.3", optional = true }
 
 # Shared utilities for postgis and mongodb-out features
 once_cell = { version = "1", optional = true }
+r2d2 = { version = "0.8", optional = true }
+crossbeam-channel = "0.5"
 
 # Structured logging
 log = "0.4"

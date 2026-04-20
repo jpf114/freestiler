@@ -17,8 +17,9 @@ mod postgis_impl {
     use log::{debug, info, warn};
     use postgres::{Client, NoTls, Row};
     use rayon::prelude::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
     use std::str::FromStr;
+
+    use crate::tile_spool::unique_suffix;
 
     const WKB_ALIAS: &str = "__wkb";
     const CURSOR_NAME: &str = "__freestiler_cursor";
@@ -703,6 +704,24 @@ mod postgis_impl {
             result
         }
 
+        pub fn query_features_in_bbox(
+            &self,
+            min_lon: f64,
+            min_lat: f64,
+            max_lon: f64,
+            max_lat: f64,
+        ) -> Result<Vec<Feature>, String> {
+            let bbox_sql = format!(
+                "SELECT * FROM ({}) AS __t WHERE ST_Intersects(\"{}\", ST_MakeEnvelope({}, {}, {}, {}, 4326))",
+                self.full_sql,
+                self.schema.geom_column,
+                min_lon, min_lat, max_lon, max_lat
+            );
+            let rows = self.conn.query(&bbox_sql, &[])
+                .map_err(|e| format!("BBOX query failed: {}", e))?;
+            parse_rows_parallel(&rows, &self.prop_cols, 1)
+        }
+
         pub fn materialize_temp_snapshot(&mut self) -> Result<(), String> {
             if self.temp_snapshot_table.is_some() {
                 return Ok(());
@@ -737,14 +756,6 @@ mod postgis_impl {
                 let _ = self.conn.execute(&format!("DROP TABLE IF EXISTS {}", t), &[]);
             }
         }
-    }
-
-    fn unique_suffix() -> String {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        format!("{}_{}", std::process::id(), nanos)
     }
 
     pub fn postgis_query_to_layers_with_geom(

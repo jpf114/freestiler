@@ -11,12 +11,26 @@ use serde_json::{json, Value};
 use crate::tiler::TileCoord;
 
 const PMTILES_HEADER_BYTES: u64 = 127;
+const MLT_TILE_TYPE_BYTE_OFFSET: u64 = 99;
+const MLT_TILE_TYPE_BYTE_VALUE: u8 = 0x06;
 
 /// Tile format selection
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TileFormat {
     Mvt,
     Mlt,
+}
+
+fn patch_mlt_tile_type(output_path: &str) -> Result<(), String> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(output_path)
+        .map_err(|e| format!("Cannot reopen {}: {}", output_path, e))?;
+    file.seek(SeekFrom::Start(MLT_TILE_TYPE_BYTE_OFFSET))
+        .map_err(|e| format!("Seek error: {}", e))?;
+    file.write_all(&[MLT_TILE_TYPE_BYTE_VALUE])
+        .map_err(|e| format!("Write error: {}", e))?;
+    Ok(())
 }
 
 /// Metadata for a single layer in the PMTiles archive
@@ -123,14 +137,7 @@ pub fn write_pmtiles(
     // For MLT format, patch the tile_type byte in the header
     // PMTiles v3 header: byte 99 is tile_type
     if format == TileFormat::Mlt {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(output_path)
-            .map_err(|e| format!("Cannot reopen {}: {}", output_path, e))?;
-        file.seek(SeekFrom::Start(99))
-            .map_err(|e| format!("Seek error: {}", e))?;
-        file.write_all(&[0x06])
-            .map_err(|e| format!("Write error: {}", e))?;
+        patch_mlt_tile_type(output_path)?;
     }
 
     Ok(())
@@ -222,14 +229,7 @@ pub fn write_pmtiles_from_spool(
         .map_err(|e| format!("Cannot write PMTiles header: {}", e))?;
 
     if format == TileFormat::Mlt {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(output_path)
-            .map_err(|e| format!("Cannot reopen {}: {}", output_path, e))?;
-        file.seek(SeekFrom::Start(99))
-            .map_err(|e| format!("Seek error: {}", e))?;
-        file.write_all(&[0x06])
-            .map_err(|e| format!("Write error: {}", e))?;
+        patch_mlt_tile_type(output_path)?;
     }
 
     Ok(())

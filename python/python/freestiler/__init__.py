@@ -658,6 +658,7 @@ def freestile_postgis(
     batch_size: int | None = 10000,
     upsert: bool = False,
     geom_column: str | None = None,
+    streaming: bool = False,
 ) -> Union[Path, dict]:
     """Create tiles from a PostGIS database query.
 
@@ -709,6 +710,9 @@ def freestile_postgis(
         the same (z,x,y) coordinates (default False).
     geom_column : str, optional
         Name of the geometry column to use. If None, auto-detected.
+    streaming : bool
+        For MongoDB large-data mode, use streaming pipeline for bounded
+        memory usage (default False).
 
     Returns
     -------
@@ -781,6 +785,7 @@ def freestile_postgis(
             large_mode_threshold=large_mode_threshold,
             mongo_flush_min_tiles=mongo_flush_min_tiles,
             mongo_flush_max_bytes=mongo_flush_max_bytes,
+            streaming=streaming,
         )
         return {"status": "ok", "result": result}
     else:
