@@ -10,6 +10,7 @@ pub struct LayerSchema {
     pub prop_names: Vec<String>,
     pub prop_types: Vec<String>,
     pub source_srid: Option<i32>,
+    pub fid_column: Option<String>,
 }
 
 #[derive(Clone, Debug)]

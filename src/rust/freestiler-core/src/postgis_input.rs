@@ -43,6 +43,7 @@ mod postgis_impl {
         pub prop_names: Vec<String>,
         pub prop_types: Vec<String>,
         pub source_srid: Option<i32>,
+        pub fid_column: Option<String>,
     }
 
     pub struct PostgisBatchScanner {
@@ -451,6 +452,40 @@ mod postgis_impl {
         schema: PostgisLayerSchema,
     }
 
+    fn is_integer_like_type(type_name: &str) -> bool {
+        matches!(
+            type_name.to_lowercase().as_str(),
+            "int2" | "int4" | "int8" | "smallint" | "integer" | "bigint" | "oid" | "serial" | "bigserial"
+        )
+    }
+
+    fn detect_fid_column(columns: &[PgColumn], geom_col_name: &str) -> Option<String> {
+        let geom_lower = geom_col_name.to_lowercase();
+        let preferred_names = ["__fid", "id", "gid", "fid", "objectid", "oid"];
+
+        for preferred in preferred_names {
+            if let Some(column) = columns.iter().find(|column| {
+                column.name.to_lowercase() == preferred
+                    && column.name.to_lowercase() != geom_lower
+                    && is_integer_like_type(&column.type_name)
+            }) {
+                return Some(column.name.clone());
+            }
+        }
+
+        None
+    }
+
+    fn wrap_sql_with_stable_order(sql: &str, fid_column: Option<&str>) -> String {
+        match fid_column {
+            Some(fid_column) => format!(
+                "SELECT * FROM ({}) AS __ordered_src ORDER BY \"{}\"",
+                sql, fid_column
+            ),
+            None => sql.to_string(),
+        }
+    }
+
     fn prepare_query_plan(
         conn: &mut Client,
         sql: &str,
@@ -501,6 +536,7 @@ mod postgis_impl {
             .iter()
             .map(|&(idx, _)| pg_type_to_property_type(&columns[idx].type_name))
             .collect();
+        let fid_column = detect_fid_column(&columns, &geom_col_name);
 
         let geom_col_lower = geom_col_name.to_lowercase();
         let select_cols: Vec<String> = columns
@@ -510,7 +546,8 @@ mod postgis_impl {
             .map(|(_i, c)| format!("\"{}\"", c.name))
             .chain(std::iter::once(format!("{} AS \"{}\"", geom_expr, WKB_ALIAS)))
             .collect();
-        let full_sql = format!("SELECT {} FROM ({}) AS __t", select_cols.join(", "), sql);
+        let ordered_sql = wrap_sql_with_stable_order(sql, fid_column.as_deref());
+        let full_sql = format!("SELECT {} FROM ({}) AS __t", select_cols.join(", "), ordered_sql);
 
         Ok(PreparedPostgisQuery {
             full_sql,
@@ -520,6 +557,7 @@ mod postgis_impl {
                 prop_names,
                 prop_types,
                 source_srid,
+                fid_column,
             },
         })
     }

@@ -15,5 +15,6 @@ pub fn discover_layer_schema(
         prop_names: schema.prop_names,
         prop_types: schema.prop_types,
         source_srid: schema.source_srid,
+        fid_column: schema.fid_column,
     })
 }
