@@ -4,7 +4,6 @@
 mod streaming_impl {
     use crate::pmtiles_writer::TileFormat;
     use crate::{tiler, mvt, mlt};
-    use log::info;
     use std::time::Instant;
     use std::sync::{Arc, Mutex};
     use std::sync::atomic::{AtomicUsize, Ordering};

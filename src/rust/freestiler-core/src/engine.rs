@@ -4,7 +4,6 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::tile_spool::unique_suffix;
 use crate::error::{FreestilerError, Result};

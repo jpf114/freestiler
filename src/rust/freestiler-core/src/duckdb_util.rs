@@ -1,5 +1,3 @@
-use crate::tiler::PropertyValue;
-
 #[derive(Clone, Copy)]
 pub enum DuckDbValueKind {
     String,
@@ -39,6 +37,9 @@ pub fn duckdb_type_to_property_type(dtype: &str) -> String {
         DuckDbValueKind::Bool => "logical".to_string(),
     }
 }
+
+#[cfg(feature = "duckdb")]
+use crate::tiler::PropertyValue;
 
 #[cfg(feature = "duckdb")]
 pub fn extract_value(row: &duckdb::Row, col_idx: usize, kind: DuckDbValueKind) -> PropertyValue {

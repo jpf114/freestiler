@@ -1912,7 +1912,7 @@ mod tests {
         pos += bl as usize;
 
         // Stream 3: numRings — should be integer-RLE (all 4 vertices per ring after closing-point removal)
-        let (st, sub, t1, _t2, phys, nv, bl, hdr_len) = parse_stream_header(&tile_bytes, pos);
+        let (st, sub, _t1, _t2, _phys, _nv, bl, hdr_len) = parse_stream_header(&tile_bytes, pos);
         assert_eq!(st, STREAM_LENGTH);
         assert_eq!(sub, LENGTH_RINGS);
         pos += hdr_len;
@@ -1928,7 +1928,7 @@ mod tests {
         pos += bl as usize;
 
         // --- Property stream (i64, no nulls) ---
-        let (st, sub, t1, _t2, phys, nv, bl, hdr_len) = parse_stream_header(&tile_bytes, pos);
+        let (st, _sub, _t1, _t2, _phys, nv, bl, hdr_len) = parse_stream_header(&tile_bytes, pos);
         assert_eq!(st, STREAM_DATA);
         assert_eq!(nv, 20);
         pos += hdr_len;

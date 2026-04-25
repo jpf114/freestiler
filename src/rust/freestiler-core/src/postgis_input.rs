@@ -961,6 +961,7 @@ mod postgis_impl {
         }
     }
 
+    #[cfg(test)]
     fn effective_batch_size(batch_size: Option<usize>) -> Option<usize> {
         batch_size.filter(|size| *size > 0)
     }
