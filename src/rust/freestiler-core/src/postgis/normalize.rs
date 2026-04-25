@@ -22,13 +22,14 @@ fn prop_kind(type_name: &str) -> PropKind {
 pub fn normalize_rows(
     rows: &[postgres::Row],
     schema: &crate::model::LayerSchema,
-    start_id: u64,
 ) -> Result<Vec<NormalizedFeature>, String> {
     let prop_kinds: Vec<PropKind> = schema.prop_types.iter().map(|t| prop_kind(t)).collect();
-    let wkb_idx = schema.prop_names.len();
+    let fid_idx = schema.prop_names.len();
+    let wkb_idx = fid_idx + 1;
     let mut out = Vec::with_capacity(rows.len());
 
-    for (idx, row) in rows.iter().enumerate() {
+    for row in rows.iter() {
+        let id: Option<i64> = row.try_get(fid_idx).ok().flatten();
         let wkb_bytes: Option<Vec<u8>> = row.get(wkb_idx);
         let Some(wkb_bytes) = wkb_bytes else {
             continue;
@@ -71,7 +72,7 @@ pub fn normalize_rows(
 
         let bbox = BBox4326::from(geometry_bbox(&geometry));
         out.push(NormalizedFeature {
-            id: Some(start_id + idx as u64),
+            id: id.map(|v| v as u64),
             geometry,
             properties,
             bbox,

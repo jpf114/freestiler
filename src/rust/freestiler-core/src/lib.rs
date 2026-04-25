@@ -52,3 +52,5 @@ pub use streaming_pipeline::{stream_postgis_to_mongo, StreamingConfig, Streaming
 
 #[cfg(all(feature = "postgis", feature = "mongodb-out"))]
 pub use tileflow::pipeline::run_postgis_to_mongo_stream;
+#[cfg(feature = "postgis")]
+pub use tileflow::pipeline::run_postgis_to_tile_sink_stream;

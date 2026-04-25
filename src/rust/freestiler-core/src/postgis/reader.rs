@@ -26,7 +26,6 @@ pub struct PostgisPartitionReader {
     conn: postgres::Client,
     schema: LayerSchema,
     source_sql: String,
-    next_id: u64,
 }
 
 #[cfg(feature = "postgis")]
@@ -54,7 +53,6 @@ pub fn open_partition_reader(
         conn: connect(config)?,
         schema,
         source_sql: sql.to_string(),
-        next_id: 1,
     })
 }
 
@@ -73,9 +71,13 @@ impl PostgisPartitionReader {
             .map(|name| format!("\"{}\"", name))
             .collect();
         let mut projections = select_cols;
+        projections.push("\"__fid\"".to_string());
         projections.push(format!("ST_AsEWKB({}) AS \"__wkb\"", geom_expr));
         format!(
-            "SELECT {} FROM ({}) AS __stream_src \
+            "SELECT {} FROM ( \
+                SELECT __stream_base.*, ROW_NUMBER() OVER () AS \"__fid\" \
+                FROM ({}) AS __stream_base \
+             ) AS __stream_src \
              WHERE {} IS NOT NULL \
              AND ST_Intersects({}, ST_MakeEnvelope({}, {}, {}, {}, 4326))",
             projections.join(", "),
@@ -95,8 +97,7 @@ impl PostgisPartitionReader {
             .conn
             .query(&sql, &[])
             .map_err(|e| format!("Partition query failed: {}", e))?;
-        let features = super::normalize::normalize_rows(&rows, &self.schema, self.next_id)?;
-        self.next_id += features.len() as u64;
+        let features = super::normalize::normalize_rows(&rows, &self.schema)?;
         Ok(FeatureBatch {
             partition: partition.clone(),
             features,

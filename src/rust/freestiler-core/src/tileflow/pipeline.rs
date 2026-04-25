@@ -11,6 +11,11 @@ use crate::tileflow::finalizer::{finalize_tile, FinalizeConfig};
 #[cfg(feature = "mongodb-out")]
 use crate::sink::mongo::MongoTileSink;
 
+pub trait TileSink {
+    fn push(&mut self, tile: crate::model::EncodedTile) -> std::result::Result<(), String>;
+    fn finish(&mut self) -> std::result::Result<u64, String>;
+}
+
 fn validate_streaming_tile_config(tile_config: &TileConfig) -> Result<()> {
     if tile_config.cluster_distance.map_or(false, |d| d > 0.0) {
         return Err(FreestilerError::Other(
@@ -36,6 +41,33 @@ pub fn run_postgis_to_mongo_stream(
     geom_column_hint: Option<&str>,
     reporter: &dyn ProgressReporter,
 ) -> Result<u64> {
+    let mut sink = MongoTileSink::open(mongo_config).map_err(FreestilerError::Database)?;
+    if mongo_config.create_indexes {
+        sink.ensure_indexes().map_err(FreestilerError::Database)?;
+    }
+    run_postgis_to_tile_sink_stream(
+        pg_config,
+        &mut sink,
+        tile_config,
+        partition_config,
+        layer_name,
+        sql,
+        geom_column_hint,
+        reporter,
+    )
+}
+
+#[cfg(feature = "postgis")]
+pub fn run_postgis_to_tile_sink_stream(
+    pg_config: &crate::postgis_input::PostgisConfig,
+    sink: &mut dyn TileSink,
+    tile_config: &TileConfig,
+    partition_config: &PartitionConfig,
+    layer_name: &str,
+    sql: &str,
+    geom_column_hint: Option<&str>,
+    reporter: &dyn ProgressReporter,
+) -> Result<u64> {
     validate_streaming_tile_config(tile_config)?;
     let schema = discover_layer_schema(pg_config, sql, layer_name, geom_column_hint)
         .map_err(FreestilerError::Database)?;
@@ -47,10 +79,6 @@ pub fn run_postgis_to_mongo_stream(
     .map_err(FreestilerError::Database)?;
     let partitions = plan_partitions(tile_config, partition_config);
     let mut accum = TileAccumulatorMap::new();
-    let mut sink = MongoTileSink::open(mongo_config).map_err(FreestilerError::Database)?;
-    if mongo_config.create_indexes {
-        sink.ensure_indexes().map_err(FreestilerError::Database)?;
-    }
     let dispatch_cfg = DispatchConfig {
         min_zoom: tile_config.min_zoom,
         max_zoom: tile_config.max_zoom,

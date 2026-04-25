@@ -55,6 +55,13 @@ pub fn finalize_tile(
             let kb = tile_morton_key(&b.geometry, west, east, south, north);
             ka.cmp(&kb).then(a.id.cmp(&b.id))
         });
+        // The same source row can be read by adjacent spatial partitions.
+        // Once streaming carries a stable source id, duplicate copies in the
+        // same tile can be removed without affecting legitimate cross-tile fanout.
+        tile_features.dedup_by(|a, b| match (a.id, b.id) {
+            (Some(left), Some(right)) => left == right,
+            _ => false,
+        });
     }
 
     if config.coalesce {
