@@ -1,14 +1,18 @@
 #[cfg(feature = "mongodb-out")]
 mod mongo_impl {
     use crate::tiler::TileCoord;
+    use once_cell::sync::Lazy;
     use mongodb::bson::{doc, spec::BinarySubtype, Binary};
     use mongodb::options::{ClientOptions, IndexOptions};
     use mongodb::{Client, IndexModel};
-    use futures::executor::block_on;
+    use tokio::runtime::Runtime;
     use crate::engine::ProgressReporter;
 
+    static TOKIO_RUNTIME: Lazy<Runtime> =
+        Lazy::new(|| Runtime::new().expect("failed to create mongodb tokio runtime"));
+
     fn block_on_safe<F: std::future::Future>(f: F) -> F::Output {
-        block_on(f)
+        TOKIO_RUNTIME.block_on(f)
     }
 
     #[derive(Clone, Debug)]
@@ -108,10 +112,16 @@ mod mongo_impl {
                         "y": coord.y as i32,
                         "data": Binary { subtype: BinarySubtype::Generic, bytes: data_ref.clone() },
                     };
-                    coll.replace_one(doc! { "id": replacement.get_str("id").unwrap_or_default() }, replacement)
-                        .upsert(self.config.effective_upsert())
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    if self.config.effective_upsert() {
+                        coll.replace_one(doc! { "id": replacement.get_str("id").unwrap_or_default() }, replacement)
+                            .upsert(true)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    } else {
+                        coll.insert_one(replacement)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    }
                     bytes_written += data_ref.len() as u64;
                     if let Some(reporter) = reporter {
                         reporter.report(&format!(

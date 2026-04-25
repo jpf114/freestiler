@@ -1,11 +1,20 @@
 #[cfg(feature = "mongodb-out")]
 mod mongo_impl {
-    use futures::executor::block_on;
     use mongodb::bson::{doc, spec::BinarySubtype, Binary, Document};
     use mongodb::options::{ClientOptions, IndexOptions};
     use mongodb::{Client, Collection, IndexModel};
+    use once_cell::sync::Lazy;
+    use tokio::runtime::Runtime;
 
     use crate::model::EncodedTile;
+    use crate::tileflow::pipeline::TileSink;
+
+    static TOKIO_RUNTIME: Lazy<Runtime> =
+        Lazy::new(|| Runtime::new().expect("failed to create mongodb tokio runtime"));
+
+    fn block_on_safe<F: std::future::Future>(f: F) -> F::Output {
+        TOKIO_RUNTIME.block_on(f)
+    }
 
     #[derive(Clone, Debug)]
     pub struct MongoSinkConfig {
@@ -38,7 +47,7 @@ mod mongo_impl {
 
     impl MongoTileSink {
         pub fn open(config: &MongoSinkConfig) -> Result<Self, String> {
-            let collection = block_on(async {
+            let collection = block_on_safe(async {
                 let options = ClientOptions::parse(&config.uri)
                     .await
                     .map_err(|e| e.to_string())?;
@@ -58,7 +67,7 @@ mod mongo_impl {
         }
 
         pub fn ensure_indexes(&self) -> Result<(), String> {
-            block_on(async {
+            block_on_safe(async {
                 let model = IndexModel::builder()
                     .keys(doc! { "id": 1 })
                     .options(IndexOptions::builder().unique(true).build())
@@ -86,13 +95,19 @@ mod mongo_impl {
             let tiles = std::mem::take(&mut self.pending);
             let coll = self.collection.clone();
             let upsert = self.config.upsert;
-            block_on(async move {
+            block_on_safe(async move {
                 for tile in &tiles {
                     let doc = encoded_tile_to_document(tile);
-                    coll.replace_one(doc! { "id": doc.get_str("id").unwrap_or_default() }, doc)
-                        .upsert(upsert)
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    if upsert {
+                        coll.replace_one(doc! { "id": doc.get_str("id").unwrap_or_default() }, doc)
+                            .upsert(true)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    } else {
+                        coll.insert_one(doc)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    }
                 }
                 Ok::<u64, String>(tiles.len() as u64)
             })
@@ -100,6 +115,16 @@ mod mongo_impl {
 
         pub fn finish(&mut self) -> Result<u64, String> {
             self.flush()
+        }
+    }
+
+    impl TileSink for MongoTileSink {
+        fn push(&mut self, tile: EncodedTile) -> Result<(), String> {
+            MongoTileSink::push(self, tile)
+        }
+
+        fn finish(&mut self) -> Result<u64, String> {
+            MongoTileSink::finish(self)
         }
     }
 
