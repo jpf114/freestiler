@@ -21,7 +21,7 @@ pub mod postgis_input;
 pub mod sink;
 pub mod simplify;
 pub mod tile_spool;
-#[cfg(all(feature = "postgis", feature = "mongodb-out"))]
+#[cfg(feature = "postgis")]
 pub mod tileflow;
 #[cfg(any(feature = "geoparquet", feature = "duckdb", feature = "postgis"))]
 pub mod wkb;
