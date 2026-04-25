@@ -7,7 +7,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use crate::duckdb_util::{self, DuckDbValueKind};
-use crate::tile_spool::{unique_suffix, TileSpool};
+use crate::tile_spool::unique_suffix;
 use crate::engine::{ProgressReporter, TileConfig};
 use crate::pmtiles_writer::{self, LayerMeta, TileFormat};
 use crate::tiler::{Feature, Geometry, PropertyValue, TileCoord};
@@ -430,6 +430,10 @@ struct TileSpool {
     file: File,
     offset: u64,
     entries: Vec<Entry>,
+}
+
+fn temp_file_path(stem: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("freestiler_{}_{}.tmp", stem, unique_suffix()))
 }
 
 impl TileSpool {

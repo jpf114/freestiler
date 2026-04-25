@@ -23,6 +23,7 @@ mod postgis_impl {
 
     const WKB_ALIAS: &str = "__wkb";
     const CURSOR_NAME: &str = "__freestiler_cursor";
+    const DEFAULT_BATCH_SIZE: usize = 10_000;
     #[derive(Clone, Copy, Debug)]
     enum PgValueKind {
         String,
@@ -705,7 +706,7 @@ mod postgis_impl {
         }
 
         pub fn query_features_in_bbox(
-            &self,
+            &mut self,
             min_lon: f64,
             min_lat: f64,
             max_lon: f64,

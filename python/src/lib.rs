@@ -219,7 +219,7 @@ fn _freestile(
         drop_rate, cluster_distance, cluster_maxzoom, do_coalesce,
     );
 
-    match engine::generate_pmtiles(&layer_data, output_path, &config, reporter) {
+    match engine::generate_pmtiles(&layer_data, output_path, &config, reporter.as_ref()) {
         Ok(()) => Ok(output_path.to_string()),
         Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Error: {}", e))),
     }
@@ -249,7 +249,7 @@ fn _freestile_file(
 
     let layers =
         freestiler_core::file_input::parquet_to_layers(input_path, layer_name, min_zoom, max_zoom)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
     if !quiet {
         let total: usize = layers.iter().map(|l| l.features.len()).sum();
@@ -261,9 +261,9 @@ fn _freestile_file(
         drop_rate, cluster_distance, cluster_maxzoom, do_coalesce,
     );
 
-    match engine::generate_pmtiles(&layers, output_path, &config, reporter) {
+    match engine::generate_pmtiles(&layers, output_path, &config, reporter.as_ref()) {
         Ok(()) => Ok(output_path.to_string()),
-        Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e)),
+        Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())),
     }
 }
 
@@ -308,7 +308,7 @@ fn _freestile_duckdb_query(
 
     if maybe_stream {
         match freestiler_core::streaming::generate_pmtiles_from_duckdb_query(
-            db_path, sql, output_path, layer_name, &config, reporter.clone(),
+            db_path, sql, output_path, layer_name, &config, reporter.as_ref(),
         ) {
             Ok(_) => return Ok(output_path.to_string()),
             Err(e) => {
@@ -316,7 +316,7 @@ fn _freestile_duckdb_query(
                     && (e.contains("POINT geometries only")
                         || e.contains("does not support clustering"));
                 if !can_fallback {
-                    return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e));
+                    return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()));
                 }
                 if !quiet {
                     reporter.report("  Streaming unavailable for this query, falling back to in-memory tiling");
@@ -327,16 +327,16 @@ fn _freestile_duckdb_query(
 
     let layers = freestiler_core::file_input::duckdb_query_to_layers(
         db_path, sql, layer_name, min_zoom, max_zoom,
-    ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+    ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
     if !quiet {
         let total: usize = layers.iter().map(|l| l.features.len()).sum();
         reporter.report(&format!("  Query returned {} features", total));
     }
 
-    match engine::generate_pmtiles(&layers, output_path, &config, reporter) {
+    match engine::generate_pmtiles(&layers, output_path, &config, reporter.as_ref()) {
         Ok(()) => Ok(output_path.to_string()),
-        Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e)),
+        Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())),
     }
 }
 
@@ -364,7 +364,7 @@ fn _freestile_duckdb(
 
     let layers = freestiler_core::file_input::duckdb_file_to_layers(
         input_path, layer_name, min_zoom, max_zoom,
-    ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+    ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
     if !quiet {
         let total: usize = layers.iter().map(|l| l.features.len()).sum();
@@ -376,9 +376,9 @@ fn _freestile_duckdb(
         drop_rate, cluster_distance, cluster_maxzoom, do_coalesce,
     );
 
-    match engine::generate_pmtiles(&layers, output_path, &config, reporter) {
+    match engine::generate_pmtiles(&layers, output_path, &config, reporter.as_ref()) {
         Ok(()) => Ok(output_path.to_string()),
-        Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e)),
+        Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())),
     }
 }
 
@@ -416,7 +416,7 @@ fn _freestile_postgis(
 
     let layers = freestiler_core::postgis_input::postgis_query_to_layers_with_geom(
         conn_str, sql, layer_name, min_zoom, max_zoom, batch_size, geom_column,
-    ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+    ).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
 
     if !quiet {
         let total: usize = layers.iter().map(|l| l.features.len()).sum();
@@ -428,9 +428,9 @@ fn _freestile_postgis(
         drop_rate, cluster_distance, cluster_maxzoom, do_coalesce,
     );
 
-    match engine::generate_tiles_to_target(&layers, &output, &config, reporter) {
+    match engine::generate_tiles_to_target(&layers, &output, &config, reporter.as_ref()) {
         Ok(count) => Ok(format!("{} tiles written to {}", count, output_path)),
-        Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e)),
+        Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())),
     }
 }
 
@@ -481,7 +481,6 @@ fn _freestile_postgis_to_mongo(
     let mut mongo_config = freestiler_core::mongo_writer::MongoConfig::new(mongo_uri, mongo_db, mongo_collection)
         .batch_size(4096)
         .write_concurrency(4)
-        .compress(flate2::Compression::default())
         .create_indexes(true)
         .upsert(upsert);
     if let Some(v) = mongo_batch_size {
@@ -521,7 +520,7 @@ fn _freestile_postgis_to_mongo(
             geom_column,
             threshold,
         )
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
         if is_large { None } else { layers_opt }
     } else {
         None
@@ -540,14 +539,14 @@ fn _freestile_postgis_to_mongo(
         let layers = match maybe_small_layers {
             Some(l) => l,
             None => freestiler_core::postgis_input::postgis_query_to_layers_with_geom(
-                &pg_config, sql, layer_name, min_zoom, max_zoom, batch_size, geom_column,
+                conn_str, sql, layer_name, min_zoom, max_zoom, batch_size, geom_column,
             )
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?,
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?,
         };
 
-        match engine::generate_tiles_to_target(&layers, &output, &config, reporter.clone()) {
+        match engine::generate_tiles_to_target(&layers, &output, &config, reporter.as_ref()) {
             Ok(count) => Ok(format!("{} tiles written to MongoDB", count)),
-            Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e)),
+            Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())),
         }
     } else {
         if !quiet {
@@ -561,18 +560,30 @@ fn _freestile_postgis_to_mongo(
             if !quiet {
                 reporter.report("  Using streaming pipeline for bounded memory usage");
             }
-            match engine::generate_postgis_query_to_mongo_streaming(
+            let mut sink_config = freestiler_core::sink::mongo::MongoSinkConfig::new(
+                mongo_uri,
+                mongo_db,
+                mongo_collection,
+            );
+            sink_config.batch_size = mongo_batch_size.unwrap_or(4096);
+            sink_config.create_indexes = mongo_create_indexes.unwrap_or(true);
+            sink_config.upsert = upsert;
+            let partition_config = freestiler_core::postgis::partition::PartitionConfig {
+                partition_zoom: max_zoom,
+                metatile_rows: 64,
+            };
+            match freestiler_core::run_postgis_to_mongo_stream(
                 &pg_config,
-                sql,
-                layer_name,
-                geom_column,
-                &mongo_config,
+                &sink_config,
                 &config,
-                None, // use default streaming config
-                reporter.clone(),
+                &partition_config,
+                layer_name,
+                sql,
+                geom_column,
+                reporter.as_ref(),
             ) {
                 Ok(count) => Ok(format!("{} tiles written to MongoDB", count)),
-                Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e)),
+                Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())),
             }
         } else {
             match engine::generate_postgis_query_to_mongo_by_zoom(
@@ -582,10 +593,10 @@ fn _freestile_postgis_to_mongo(
                 geom_column,
                 &mongo_config,
                 &config,
-                reporter.clone(),
+                reporter.as_ref(),
             ) {
                 Ok(count) => Ok(format!("{} tiles written to MongoDB", count)),
-                Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e)),
+                Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())),
             }
         }
     }

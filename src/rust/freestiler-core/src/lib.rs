@@ -7,15 +7,22 @@ pub mod engine;
 pub mod error;
 #[cfg(any(feature = "geoparquet", feature = "duckdb"))]
 pub mod file_input;
+pub mod model;
 #[cfg(feature = "mongodb-out")]
 pub mod mongo_writer;
 pub mod mlt;
 pub mod mvt;
 pub mod pmtiles_writer;
 #[cfg(feature = "postgis")]
+pub mod postgis;
+#[cfg(feature = "postgis")]
 pub mod postgis_input;
+#[cfg(feature = "mongodb-out")]
+pub mod sink;
 pub mod simplify;
 pub mod tile_spool;
+#[cfg(all(feature = "postgis", feature = "mongodb-out"))]
+pub mod tileflow;
 #[cfg(any(feature = "geoparquet", feature = "duckdb", feature = "postgis"))]
 pub mod wkb;
 #[cfg(feature = "duckdb")]
@@ -43,6 +50,5 @@ pub use postgis_input::{
 #[cfg(all(feature = "postgis", feature = "mongodb-out"))]
 pub use streaming_pipeline::{stream_postgis_to_mongo, StreamingConfig, StreamingTilePipeline};
 
-// Re-export the streaming pipeline entry point from engine for convenience
 #[cfg(all(feature = "postgis", feature = "mongodb-out"))]
-pub use engine::generate_postgis_query_to_mongo_streaming;
+pub use tileflow::pipeline::run_postgis_to_mongo_stream;

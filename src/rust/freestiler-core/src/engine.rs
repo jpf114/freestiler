@@ -487,7 +487,7 @@ pub fn generate_postgis_query_to_mongo_by_zoom(
     mongo_cfg: &crate::mongo_writer::MongoConfig,
     config: &TileConfig,
     reporter: &dyn ProgressReporter,
-) -> Result<u64, String> {
+) -> std::result::Result<u64, String> {
     use crate::mongo_writer::MongoTileWriter;
     use crate::postgis_input::PostgisBatchScanner;
 
@@ -536,12 +536,12 @@ pub fn generate_postgis_query_to_mongo_by_zoom(
 
     let flush_pending = |why: &str,
                              writer: &MongoTileWriter,
-                             compress: bool,
+                             compress: flate2::Compression,
                              reporter: &dyn ProgressReporter,
                              total_tiles_written: &mut u64,
                              pending_tiles: &mut Vec<(TileCoord, Vec<u8>)>,
                              pending_bytes: &mut u64|
-     -> Result<(), String> {
+     -> std::result::Result<(), String> {
         if pending_tiles.is_empty() {
             return Ok(());
         }
@@ -673,7 +673,7 @@ fn generate_mongo_streamed(
     config: &TileConfig,
     reporter: &dyn ProgressReporter,
 ) -> Result<u64> {
-    use crate::mongo_writer::{MongoTileWriter, MongoWriteResult};
+    use crate::mongo_writer::{MongoTileWriter, WriteResult};
 
     let writer = MongoTileWriter::from_config(mongo_cfg).map_err(FreestilerError::Other)?;
     if mongo_cfg.effective_create_indexes() {
@@ -689,7 +689,10 @@ fn generate_mongo_streamed(
     let batch_size = mongo_cfg.effective_batch_size();
     let write_start = Instant::now();
     let mut batch: Vec<(TileCoord, Vec<u8>)> = Vec::with_capacity(batch_size);
-    let mut total_result = MongoWriteResult::default();
+    let mut total_result = WriteResult {
+        tiles_written: 0,
+        bytes_written: 0,
+    };
     let mut tile_count = 0u64;
 
     reporter.report("  Writing to MongoDB ...");
@@ -723,8 +726,8 @@ fn generate_mongo_streamed(
 fn flush_mongo_batch(
     writer: &crate::mongo_writer::MongoTileWriter,
     batch: &mut Vec<(TileCoord, Vec<u8>)>,
-    compress: bool,
-    total_result: &mut crate::mongo_writer::MongoWriteResult,
+    compress: flate2::Compression,
+    total_result: &mut crate::mongo_writer::WriteResult,
     reporter: &dyn ProgressReporter,
 ) -> Result<()> {
     if batch.is_empty() {
@@ -736,8 +739,6 @@ fn flush_mongo_batch(
         .map_err(FreestilerError::Other)?;
 
     total_result.tiles_written += result.tiles_written;
-    total_result.tiles_upserted += result.tiles_upserted;
-    total_result.tiles_failed += result.tiles_failed;
     total_result.bytes_written += result.bytes_written;
     batch.clear();
     Ok(())
@@ -799,6 +800,7 @@ fn temp_file_path(stem: &str) -> PathBuf {
 mod tests {
     use super::*;
     use crate::pmtiles_writer::TileFormat;
+    use crate::tiler::PropertyValue;
     use geo_types::Point;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};

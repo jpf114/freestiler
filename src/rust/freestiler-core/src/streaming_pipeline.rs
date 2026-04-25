@@ -101,7 +101,7 @@ mod streaming_impl {
                 let mut buffer = StreamingTileBuffer::new(mongo_writer, compress, streaming_config)?;
                 let mut local_count = 0u64;
                 while let Ok((coord, data)) = rx.recv() {
-                    let res = buffer.add_tile(coord, data)?;
+                    buffer.add_tile(coord, data)?;
                     local_count += 1;
                 }
                 buffer.flush()?;
@@ -131,7 +131,7 @@ mod streaming_impl {
                         let max_y_lat = tiler::tile_y_to_lat(y_start, zoom);
                         let min_y_lat = tiler::tile_y_to_lat(y_end, zoom);
 
-                        let scanner = crate::postgis_input::PostgisBatchScanner::new(&postgis_config, &sql, geom_column.as_deref())?;
+                        let mut scanner = crate::postgis_input::PostgisBatchScanner::new(&postgis_config, &sql, geom_column.as_deref())?;
 
                         let features = scanner.query_features_in_bbox(-180.0, min_y_lat, 180.0, max_y_lat)?;
                         if features.is_empty() { continue; }

@@ -26,6 +26,7 @@ impl From<geo_types::Geometry<f64>> for Geometry {
     fn from(g: geo_types::Geometry<f64>) -> Self {
         match g {
             geo_types::Geometry::Point(p) => Geometry::Point(p),
+            geo_types::Geometry::Line(line) => Geometry::LineString(LineString(vec![line.start, line.end])),
             geo_types::Geometry::MultiPoint(p) => Geometry::MultiPoint(p),
             geo_types::Geometry::LineString(l) => Geometry::LineString(l),
             geo_types::Geometry::MultiLineString(l) => Geometry::MultiLineString(l),

@@ -48,7 +48,10 @@ impl TileSpool {
     }
 
     pub fn into_file(self) -> (File, PathBuf) {
-        (self.file, self.path)
+        let this = std::mem::ManuallyDrop::new(self);
+        let file = unsafe { std::ptr::read(&this.file) };
+        let path = unsafe { std::ptr::read(&this.path) };
+        (file, path)
     }
 }
 

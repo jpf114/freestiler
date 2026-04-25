@@ -1148,7 +1148,7 @@ fn rust_freestile_postgis_to_mongo(
         let mut mongo_config = freestiler_core::MongoConfig::new(mongo_uri, mongo_db, mongo_collection)
             .batch_size(4096)
             .write_concurrency(4)
-            .compress(true)
+            .compress(flate2::Compression::default())
             .create_indexes(true)
             .upsert(upsert);
         if mongo_batch_size > 0 {
@@ -1243,14 +1243,30 @@ fn rust_freestile_postgis_to_mongo(
                 if !quiet {
                     reporter.report("  Using streaming pipeline for bounded memory usage");
                 }
-                match engine::generate_postgis_query_to_mongo_streaming(
+                let mut sink_config = freestiler_core::sink::mongo::MongoSinkConfig::new(
+                    mongo_uri,
+                    mongo_db,
+                    mongo_collection,
+                );
+                sink_config.batch_size = if mongo_batch_size > 0 {
+                    mongo_batch_size as usize
+                } else {
+                    4096
+                };
+                sink_config.create_indexes = mongo_create_indexes.into_option().unwrap_or(true);
+                sink_config.upsert = upsert;
+                let partition_config = freestiler_core::postgis::partition::PartitionConfig {
+                    partition_zoom: max_zoom as u8,
+                    metatile_rows: 64,
+                };
+                match freestiler_core::run_postgis_to_mongo_stream(
                     &pg_config,
-                    sql,
-                    layer_name,
-                    geom_col,
-                    &mongo_config,
+                    &sink_config,
                     &config,
-                    None,
+                    &partition_config,
+                    layer_name,
+                    sql,
+                    geom_col,
                     reporter.as_ref(),
                 ) {
                     Ok(count) => format!("{} tiles written to MongoDB", count),

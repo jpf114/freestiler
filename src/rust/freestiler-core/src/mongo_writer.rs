@@ -1,15 +1,11 @@
 #[cfg(feature = "mongodb-out")]
 mod mongo_impl {
     use crate::tiler::TileCoord;
-    use mongodb::Client;
-    use mongodb::bson::{doc, Bson, Binary, spec::BinarySubtype};
-    use mongodb::gridfs::GridFsBucket;
-    use mongodb::options::{ClientOptions, ReturnDocument, IndexOptions};
-    use mongodb::IndexModel;
+    use mongodb::bson::{doc, spec::BinarySubtype, Binary};
+    use mongodb::options::{ClientOptions, IndexOptions};
+    use mongodb::{Client, IndexModel};
     use futures::executor::block_on;
     use crate::engine::ProgressReporter;
-
-    const GRIDFS_THRESHOLD_BYTES: usize = 16 * 1024 * 1024;
 
     fn block_on_safe<F: std::future::Future>(f: F) -> F::Output {
         block_on(f)
@@ -52,7 +48,7 @@ mod mongo_impl {
         pub fn effective_flush_tile_threshold(&self) -> usize { self.flush_tile_threshold.unwrap_or(4096) }
         pub fn effective_flush_byte_threshold(&self) -> u64 { self.flush_byte_threshold.unwrap_or(64 * 1024 * 1024) }
         pub fn effective_index_fail_is_error(&self) -> bool { true }
-        pub fn effective_batch_size(&self) -> Option<usize> { self.batch_size }
+        pub fn effective_batch_size(&self) -> usize { self.batch_size.unwrap_or(4096) }
     }
 
     #[derive(Clone)]
@@ -62,7 +58,6 @@ mod mongo_impl {
 
     impl MongoTileWriter {
         pub fn config(&self) -> &MongoConfig { &self.config }
-        pub async fn bucket(&self) -> GridFsBucket { self.client.database(&self.config.database).gridfs_bucket(None) }
 
         pub fn from_config(config: &MongoConfig) -> Result<Self, String> {
             let client = block_on_safe(async {
@@ -101,50 +96,29 @@ mod mongo_impl {
             block_on_safe(async {
                 let db = self.client.database(&self.config.database);
                 let coll = db.collection::<mongodb::bson::Document>(&self.config.collection);
-                let bucket = self.bucket().await;
-                let mut models = Vec::with_capacity(tiles.len());
                 let mut bytes_written = 0u64;
 
                 for (coord, data) in tiles {
                     let compressed_data = Self::gzip_compress(data, compress);
                     let data_ref = if compressed_data.len() < data.len() { &compressed_data } else { data };
-
-                    let filename = format!("{}/{}/{}", coord.z, coord.x, coord.y);
-                    let filter = doc! { "z": coord.z as i32, "x": coord.x as i32, "y": coord.y as i32 };
-
-                    if data_ref.len() < GRIDFS_THRESHOLD_BYTES {
-                        let bin = Binary { subtype: BinarySubtype::Generic, bytes: data_ref.clone() };
-                        let replacement = doc! {
-                            "z": coord.z as i32, "x": coord.x as i32, "y": coord.y as i32,
-                            "data": bin, "updated_at": mongodb::bson::DateTime::now()
-                        };
-                        let namespace = coll.namespace();
-                        let model = mongodb::action::ReplaceOneModel::builder()
-                            .namespace(namespace.clone())
-                            .filter(filter)
-                            .replacement(replacement)
-                            .build();
-                        models.push(mongodb::action::WriteModel::ReplaceOne(model));
-                    } else {
-                        use futures::io::Cursor;
-                        let file_id = bucket.upload_from_futures_0_3_reader(filename.clone(), Cursor::new(data_ref.clone())).await.map_err(|e| e.to_string())?;
-                        let replacement = doc! {
-                            "z": coord.z as i32, "x": coord.x as i32, "y": coord.y as i32,
-                            "gridfs_id": file_id, "updated_at": mongodb::bson::DateTime::now()
-                        };
-                        let namespace = coll.namespace();
-                        let model = mongodb::action::ReplaceOneModel::builder()
-                            .namespace(namespace.clone())
-                            .filter(filter)
-                            .replacement(replacement)
-                            .build();
-                        models.push(mongodb::action::WriteModel::ReplaceOne(model));
-                    }
+                    let replacement = doc! {
+                        "id": format!("{}/{}/{}", coord.z, coord.x, coord.y),
+                        "z": coord.z as i32,
+                        "x": coord.x as i32,
+                        "y": coord.y as i32,
+                        "data": Binary { subtype: BinarySubtype::Generic, bytes: data_ref.clone() },
+                    };
+                    coll.replace_one(doc! { "id": replacement.get_str("id").unwrap_or_default() }, replacement)
+                        .upsert(self.config.effective_upsert())
+                        .await
+                        .map_err(|e| e.to_string())?;
                     bytes_written += data_ref.len() as u64;
-                }
-
-                if !models.is_empty() {
-                    self.client.bulk_write(models).await.map_err(|e| e.to_string())?;
+                    if let Some(reporter) = reporter {
+                        reporter.report(&format!(
+                            "           mongo write z={} x={} y={}",
+                            coord.z, coord.x, coord.y
+                        ));
+                    }
                 }
 
                 Ok(WriteResult { tiles_written: tiles.len() as u64, bytes_written })
