@@ -11,6 +11,7 @@ mod mongo_impl {
 
     static TOKIO_RUNTIME: Lazy<Runtime> =
         Lazy::new(|| Runtime::new().expect("failed to create mongodb tokio runtime"));
+    const MONGO_MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 
     fn block_on_safe<F: std::future::Future>(f: F) -> F::Output {
         TOKIO_RUNTIME.block_on(f)
@@ -97,7 +98,7 @@ mod mongo_impl {
             let upsert = self.config.upsert;
             block_on_safe(async move {
                 for tile in &tiles {
-                    let doc = encoded_tile_to_document(tile);
+                    let doc = validated_encoded_tile_document(tile)?;
                     if upsert {
                         coll.replace_one(doc! { "id": doc.get_str("id").unwrap_or_default() }, doc)
                             .upsert(true)
@@ -129,16 +130,61 @@ mod mongo_impl {
     }
 
     pub fn encoded_tile_to_document(tile: &EncodedTile) -> Document {
+        tile_document_from_parts(tile.key.z, tile.key.x, tile.key.y, tile.data.clone())
+    }
+
+    pub(crate) fn tile_document_from_parts(z: u8, x: u32, y: u32, data: Vec<u8>) -> Document {
         doc! {
-            "id": format!("{}/{}/{}", tile.key.z, tile.key.x, tile.key.y),
-            "z": tile.key.z as i32,
-            "x": tile.key.x as i32,
-            "y": tile.key.y as i32,
+            "id": format!("{}/{}/{}", z, x, y),
+            "z": z as i32,
+            "x": x as i32,
+            "y": y as i32,
             "data": Binary {
                 subtype: BinarySubtype::Generic,
-                bytes: tile.data.clone(),
+                bytes: data,
             }
         }
+    }
+
+    pub(crate) fn validate_document_size(doc: &Document) -> Result<(), String> {
+        let data_len = doc
+            .get_binary_generic("data")
+            .map(|bytes| bytes.len())
+            .unwrap_or_default();
+        if data_len >= MONGO_MAX_DOCUMENT_BYTES {
+            return Err(format!(
+                "tile z={} x={} y={} data size {} exceeded MongoDB 16MB document limit; increase min_zoom or reduce tile density",
+                doc.get_i32("z").unwrap_or_default(),
+                doc.get_i32("x").unwrap_or_default(),
+                doc.get_i32("y").unwrap_or_default(),
+                data_len
+            ));
+        }
+
+        let bytes = mongodb::bson::to_vec(doc).map_err(|_| {
+            format!(
+                "tile z={} x={} y={} exceeded MongoDB 16MB document limit; increase min_zoom or reduce tile density",
+                doc.get_i32("z").unwrap_or_default(),
+                doc.get_i32("x").unwrap_or_default(),
+                doc.get_i32("y").unwrap_or_default()
+            )
+        })?;
+        if bytes.len() > MONGO_MAX_DOCUMENT_BYTES {
+            return Err(format!(
+                "tile z={} x={} y={} encoded document size {} exceeded MongoDB 16MB document limit; increase min_zoom or reduce tile density",
+                doc.get_i32("z").unwrap_or_default(),
+                doc.get_i32("x").unwrap_or_default(),
+                doc.get_i32("y").unwrap_or_default(),
+                bytes.len()
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validated_encoded_tile_document(tile: &EncodedTile) -> Result<Document, String> {
+        let doc = encoded_tile_to_document(tile);
+        validate_document_size(&doc)?;
+        Ok(doc)
     }
 
     #[cfg(test)]
@@ -160,6 +206,17 @@ mod mongo_impl {
             let keys: Vec<&str> = doc.keys().map(|k| k.as_str()).collect();
             assert_eq!(keys, vec!["id", "z", "x", "y", "data"]);
             assert_eq!(doc.get_str("id").unwrap(), "3/2/1");
+        }
+
+        #[test]
+        fn mongo_rejects_oversized_tile_document() {
+            let doc = tile_document_from_parts(8, 10, 20, vec![0u8; 16 * 1024 * 1024]);
+            let err = validate_document_size(&doc).expect_err("oversized tile must be rejected");
+
+            assert!(err.contains("z=8"));
+            assert!(err.contains("x=10"));
+            assert!(err.contains("y=20"));
+            assert!(err.contains("16MB"));
         }
     }
 }

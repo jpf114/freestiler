@@ -2,11 +2,12 @@
 mod mongo_impl {
     use crate::tiler::TileCoord;
     use once_cell::sync::Lazy;
-    use mongodb::bson::{doc, spec::BinarySubtype, Binary};
+    use mongodb::bson::doc;
     use mongodb::options::{ClientOptions, IndexOptions};
     use mongodb::{Client, IndexModel};
     use tokio::runtime::Runtime;
     use crate::engine::ProgressReporter;
+    use crate::sink::mongo::{tile_document_from_parts, validate_document_size};
 
     static TOKIO_RUNTIME: Lazy<Runtime> =
         Lazy::new(|| Runtime::new().expect("failed to create mongodb tokio runtime"));
@@ -105,13 +106,8 @@ mod mongo_impl {
                 for (coord, data) in tiles {
                     let compressed_data = Self::gzip_compress(data, compress);
                     let data_ref = if compressed_data.len() < data.len() { &compressed_data } else { data };
-                    let replacement = doc! {
-                        "id": format!("{}/{}/{}", coord.z, coord.x, coord.y),
-                        "z": coord.z as i32,
-                        "x": coord.x as i32,
-                        "y": coord.y as i32,
-                        "data": Binary { subtype: BinarySubtype::Generic, bytes: data_ref.clone() },
-                    };
+                    let replacement = tile_document_from_parts(coord.z, coord.x, coord.y, data_ref.clone());
+                    validate_document_size(&replacement)?;
                     if self.config.effective_upsert() {
                         coll.replace_one(doc! { "id": replacement.get_str("id").unwrap_or_default() }, replacement)
                             .upsert(true)
