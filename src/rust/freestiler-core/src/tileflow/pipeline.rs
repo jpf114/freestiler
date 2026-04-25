@@ -1,4 +1,4 @@
-use crate::engine::{ProgressReporter, SilentReporter, TileConfig};
+use crate::engine::{ProgressReporter, TileConfig};
 use crate::error::{FreestilerError, Result};
 use crate::postgis::partition::{plan_partitions, PartitionConfig};
 use crate::postgis::reader::{open_partition_reader, PostgisSourceConfig};
@@ -9,7 +9,21 @@ use crate::tileflow::dispatcher::{dispatch_feature, DispatchConfig};
 use crate::tileflow::finalizer::{finalize_tile, FinalizeConfig};
 
 #[cfg(feature = "mongodb-out")]
-use crate::sink::mongo::{MongoSinkConfig, MongoTileSink};
+use crate::sink::mongo::MongoTileSink;
+
+fn validate_streaming_tile_config(tile_config: &TileConfig) -> Result<()> {
+    if tile_config.cluster_distance.map_or(false, |d| d > 0.0) {
+        return Err(FreestilerError::Other(
+            "流式Mongo路径暂不支持cluster_distance聚类，请关闭聚类后再使用streaming".to_string(),
+        ));
+    }
+    if tile_config.drop_rate.map_or(false, |r| r > 0.0) {
+        return Err(FreestilerError::Other(
+            "流式Mongo路径暂不支持drop_rate抽稀，请关闭抽稀后再使用streaming".to_string(),
+        ));
+    }
+    Ok(())
+}
 
 #[cfg(all(feature = "postgis", feature = "mongodb-out"))]
 pub fn run_postgis_to_mongo_stream(
@@ -22,6 +36,7 @@ pub fn run_postgis_to_mongo_stream(
     geom_column_hint: Option<&str>,
     reporter: &dyn ProgressReporter,
 ) -> Result<u64> {
+    validate_streaming_tile_config(tile_config)?;
     let schema = discover_layer_schema(pg_config, sql, layer_name, geom_column_hint)
         .map_err(FreestilerError::Database)?;
     let mut reader = open_partition_reader(
@@ -126,5 +141,41 @@ mod tests {
         assert!(matches!(finalize.tile_format, TileFormat::Mlt));
         assert!(finalize.simplification);
         assert!(!finalize.coalesce);
+    }
+
+    #[test]
+    fn pipeline_rejects_cluster_for_streaming() {
+        let tile_config = TileConfig {
+            tile_format: TileFormat::Mlt,
+            min_zoom: 0,
+            max_zoom: 1,
+            base_zoom: None,
+            simplification: true,
+            drop_rate: None,
+            cluster_distance: Some(32.0),
+            cluster_maxzoom: Some(0),
+            coalesce: false,
+        };
+
+        let err = validate_streaming_tile_config(&tile_config).expect_err("should reject clustering");
+        assert!(err.to_string().contains("暂不支持cluster_distance"));
+    }
+
+    #[test]
+    fn pipeline_rejects_drop_rate_for_streaming() {
+        let tile_config = TileConfig {
+            tile_format: TileFormat::Mlt,
+            min_zoom: 0,
+            max_zoom: 1,
+            base_zoom: None,
+            simplification: true,
+            drop_rate: Some(1.5),
+            cluster_distance: None,
+            cluster_maxzoom: None,
+            coalesce: false,
+        };
+
+        let err = validate_streaming_tile_config(&tile_config).expect_err("should reject drop rate");
+        assert!(err.to_string().contains("暂不支持drop_rate"));
     }
 }
