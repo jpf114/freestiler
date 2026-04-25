@@ -12,8 +12,20 @@ use crate::tileflow::finalizer::{finalize_tile, FinalizeConfig};
 use crate::sink::mongo::MongoTileSink;
 
 pub trait TileSink {
+    fn validate_tile(&self, _tile: &crate::model::EncodedTile) -> std::result::Result<(), String> {
+        Ok(())
+    }
+
     fn push(&mut self, tile: crate::model::EncodedTile) -> std::result::Result<(), String>;
     fn finish(&mut self) -> std::result::Result<u64, String>;
+}
+
+fn validate_and_push_tile(
+    sink: &mut dyn TileSink,
+    tile: crate::model::EncodedTile,
+) -> std::result::Result<(), String> {
+    sink.validate_tile(&tile)?;
+    sink.push(tile)
 }
 
 fn validate_streaming_tile_config(tile_config: &TileConfig) -> Result<()> {
@@ -117,7 +129,7 @@ pub fn run_postgis_to_tile_sink_stream(
         for key in collect_closable_tiles(&accum, partition) {
             if let Some(tile) = accum.take_tile(&key) {
                 if let Some(encoded) = finalize_tile(tile, &finalize_cfg).map_err(FreestilerError::Other)? {
-                    sink.push(encoded).map_err(FreestilerError::Database)?;
+                    validate_and_push_tile(sink, encoded).map_err(FreestilerError::Database)?;
                     total_tiles += 1;
                 }
             }
@@ -127,7 +139,7 @@ pub fn run_postgis_to_tile_sink_stream(
     for key in collect_all_remaining_tiles(&accum) {
         if let Some(tile) = accum.take_tile(&key) {
             if let Some(encoded) = finalize_tile(tile, &finalize_cfg).map_err(FreestilerError::Other)? {
-                sink.push(encoded).map_err(FreestilerError::Database)?;
+                validate_and_push_tile(sink, encoded).map_err(FreestilerError::Database)?;
                 total_tiles += 1;
             }
         }
@@ -143,7 +155,47 @@ pub fn run_postgis_to_tile_sink_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{ContentEncoding, EncodedTile, TileKey};
     use crate::pmtiles_writer::TileFormat;
+    use std::cell::RefCell;
+
+    struct RecordingSink {
+        validated: RefCell<Vec<TileKey>>,
+        pushed: RefCell<Vec<TileKey>>,
+        fail_validate: bool,
+    }
+
+    impl RecordingSink {
+        fn new(fail_validate: bool) -> Self {
+            Self {
+                validated: RefCell::new(Vec::new()),
+                pushed: RefCell::new(Vec::new()),
+                fail_validate,
+            }
+        }
+    }
+
+    impl TileSink for RecordingSink {
+        fn validate_tile(&self, tile: &crate::model::EncodedTile) -> std::result::Result<(), String> {
+            self.validated.borrow_mut().push(tile.key);
+            if self.fail_validate {
+                return Err(format!(
+                    "reject tile z={} x={} y={}",
+                    tile.key.z, tile.key.x, tile.key.y
+                ));
+            }
+            Ok(())
+        }
+
+        fn push(&mut self, tile: crate::model::EncodedTile) -> std::result::Result<(), String> {
+            self.pushed.borrow_mut().push(tile.key);
+            Ok(())
+        }
+
+        fn finish(&mut self) -> std::result::Result<u64, String> {
+            Ok(self.pushed.borrow().len() as u64)
+        }
+    }
 
     #[test]
     fn pipeline_finalize_config_follows_tile_config() {
@@ -205,5 +257,38 @@ mod tests {
 
         let err = validate_streaming_tile_config(&tile_config).expect_err("should reject drop rate");
         assert!(err.to_string().contains("暂不支持drop_rate"));
+    }
+
+    #[test]
+    fn pipeline_validates_encoded_tile_before_push() {
+        let tile = EncodedTile {
+            key: TileKey { z: 8, x: 10, y: 20 },
+            data: vec![1, 2, 3],
+            tile_format: TileFormat::Mlt,
+            content_encoding: ContentEncoding::Identity,
+        };
+        let mut sink = RecordingSink::new(true);
+
+        let err = validate_and_push_tile(&mut sink, tile).expect_err("validation should fail first");
+
+        assert!(err.contains("z=8"));
+        assert_eq!(sink.validated.borrow().len(), 1);
+        assert_eq!(sink.pushed.borrow().len(), 0);
+    }
+
+    #[test]
+    fn pipeline_pushes_tile_after_validation_passes() {
+        let tile = EncodedTile {
+            key: TileKey { z: 9, x: 1, y: 2 },
+            data: vec![7, 8, 9],
+            tile_format: TileFormat::Mlt,
+            content_encoding: ContentEncoding::Gzip,
+        };
+        let mut sink = RecordingSink::new(false);
+
+        validate_and_push_tile(&mut sink, tile.clone()).expect("validation should pass");
+
+        assert_eq!(&*sink.validated.borrow(), &[tile.key]);
+        assert_eq!(&*sink.pushed.borrow(), &[tile.key]);
     }
 }

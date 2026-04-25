@@ -120,6 +120,10 @@ mod mongo_impl {
     }
 
     impl TileSink for MongoTileSink {
+        fn validate_tile(&self, tile: &EncodedTile) -> Result<(), String> {
+            validate_encoded_tile_for_mongo(tile)
+        }
+
         fn push(&mut self, tile: EncodedTile) -> Result<(), String> {
             MongoTileSink::push(self, tile)
         }
@@ -131,6 +135,11 @@ mod mongo_impl {
 
     pub fn encoded_tile_to_document(tile: &EncodedTile) -> Document {
         tile_document_from_parts(tile.key.z, tile.key.x, tile.key.y, tile.data.clone())
+    }
+
+    pub(crate) fn validate_encoded_tile_for_mongo(tile: &EncodedTile) -> Result<(), String> {
+        let doc = encoded_tile_to_document(tile);
+        validate_document_size(&doc)
     }
 
     pub(crate) fn tile_document_from_parts(z: u8, x: u32, y: u32, data: Vec<u8>) -> Document {
@@ -182,8 +191,8 @@ mod mongo_impl {
     }
 
     pub(crate) fn validated_encoded_tile_document(tile: &EncodedTile) -> Result<Document, String> {
+        validate_encoded_tile_for_mongo(tile)?;
         let doc = encoded_tile_to_document(tile);
-        validate_document_size(&doc)?;
         Ok(doc)
     }
 
