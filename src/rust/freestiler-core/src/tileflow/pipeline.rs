@@ -53,6 +53,7 @@ pub fn run_postgis_to_mongo_stream(
     geom_column_hint: Option<&str>,
     reporter: &dyn ProgressReporter,
 ) -> Result<u64> {
+    crate::engine::report_mongo_runtime_advisories(tile_config, reporter);
     let mut sink = MongoTileSink::open(mongo_config).map_err(FreestilerError::Database)?;
     if mongo_config.create_indexes {
         sink.ensure_indexes().map_err(FreestilerError::Database)?;

@@ -37,6 +37,12 @@ pub struct TileConfig {
     pub coalesce: bool,
 }
 
+pub const MONGO_SAFE_MIN_ZOOM: u8 = 6;
+pub const MONGO_RECOMMENDED_MIN_ZOOM: u8 = 10;
+pub const MONGO_RECOMMENDED_MAX_ZOOM: u8 = 12;
+pub const MONGO_HIGH_DETAIL_MIN_ZOOM: u8 = 14;
+pub const MONGO_HIGH_DETAIL_MAX_ZOOM: u8 = 15;
+
 impl TileConfig {
     pub fn from_binding_params(
         tile_format: &str,
@@ -64,6 +70,48 @@ impl TileConfig {
             coalesce: do_coalesce,
         }
     }
+
+    pub fn mongo_recommended_default() -> Self {
+        Self {
+            tile_format: TileFormat::Mvt,
+            min_zoom: MONGO_RECOMMENDED_MIN_ZOOM,
+            max_zoom: MONGO_RECOMMENDED_MAX_ZOOM,
+            base_zoom: None,
+            simplification: true,
+            drop_rate: None,
+            cluster_distance: None,
+            cluster_maxzoom: None,
+            coalesce: false,
+        }
+    }
+
+    pub fn mongo_safe_range(max_zoom: u8) -> Self {
+        Self {
+            tile_format: TileFormat::Mvt,
+            min_zoom: MONGO_SAFE_MIN_ZOOM,
+            max_zoom,
+            base_zoom: None,
+            simplification: true,
+            drop_rate: None,
+            cluster_distance: None,
+            cluster_maxzoom: None,
+            coalesce: false,
+        }
+    }
+
+    pub fn mongo_high_detail_profile() -> Self {
+        Self {
+            tile_format: TileFormat::Mvt,
+            min_zoom: MONGO_HIGH_DETAIL_MIN_ZOOM,
+            max_zoom: MONGO_HIGH_DETAIL_MAX_ZOOM,
+            base_zoom: None,
+            simplification: true,
+            drop_rate: None,
+            cluster_distance: None,
+            cluster_maxzoom: None,
+            coalesce: false,
+        }
+    }
 }
 
 pub trait ProgressReporter: Send + Sync {
@@ -73,6 +121,22 @@ pub trait ProgressReporter: Send + Sync {
 pub struct SilentReporter;
 impl ProgressReporter for SilentReporter {
     fn report(&self, _msg: &str) {}
+}
+
+pub fn report_mongo_runtime_advisories(config: &TileConfig, reporter: &dyn ProgressReporter) {
+    if config.min_zoom <= 5 {
+        reporter.report(&format!(
+            "Mongo output advisory: min_zoom={} may exceed the 16MB document limit on dense datasets; the validated safe floor for the large test table is min_zoom>={}",
+            config.min_zoom, MONGO_SAFE_MIN_ZOOM
+        ));
+    }
+
+    if config.min_zoom >= MONGO_HIGH_DETAIL_MIN_ZOOM || config.max_zoom >= 16 {
+        reporter.report(&format!(
+            "Mongo output advisory: high-detail zoom range {}..{} is valid but expensive; validated large-table runs show z14-z15 are on-demand friendly, while z16 is better treated as offline batch work",
+            config.min_zoom, config.max_zoom
+        ));
+    }
 }
 
 fn detect_point_layers(layers: &[LayerData]) -> Vec<bool> {
@@ -472,6 +536,7 @@ pub fn generate_tiles_to_target(
         }
         #[cfg(feature = "mongodb-out")]
         OutputTarget::MongoDB { config: mongo_cfg } => {
+            report_mongo_runtime_advisories(config, reporter);
             generate_mongo_streamed(layers, mongo_cfg, config, reporter)
         }
     }
@@ -489,6 +554,8 @@ pub fn generate_postgis_query_to_mongo_by_zoom(
 ) -> std::result::Result<u64, String> {
     use crate::mongo_writer::MongoTileWriter;
     use crate::postgis_input::PostgisBatchScanner;
+
+    report_mongo_runtime_advisories(config, reporter);
 
     let writer = MongoTileWriter::from_config(mongo_cfg)?;
     if mongo_cfg.effective_create_indexes() {
@@ -802,6 +869,7 @@ mod tests {
     use crate::tiler::PropertyValue;
     use geo_types::Point;
     use std::fs;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn sample_layer() -> LayerData {
@@ -837,6 +905,28 @@ mod tests {
             .into_owned()
     }
 
+    struct RecordingReporter {
+        messages: Mutex<Vec<String>>,
+    }
+
+    impl RecordingReporter {
+        fn new() -> Self {
+            Self {
+                messages: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn messages(&self) -> Vec<String> {
+            self.messages.lock().unwrap().clone()
+        }
+    }
+
+    impl ProgressReporter for RecordingReporter {
+        fn report(&self, msg: &str) {
+            self.messages.lock().unwrap().push(msg.to_string());
+        }
+    }
+
     #[test]
     fn test_generate_tiles_to_target_writes_pmtiles_archive() {
         let layer = sample_layer();
@@ -864,5 +954,44 @@ mod tests {
         assert!(metadata.len() > 0);
 
         let _ = fs::remove_file(&output_path);
+    }
+
+    #[test]
+    fn test_mongo_recommended_profiles_match_expected_ranges() {
+        let default_cfg = TileConfig::mongo_recommended_default();
+        assert_eq!(default_cfg.min_zoom, MONGO_RECOMMENDED_MIN_ZOOM);
+        assert_eq!(default_cfg.max_zoom, MONGO_RECOMMENDED_MAX_ZOOM);
+        assert!(matches!(default_cfg.tile_format, TileFormat::Mvt));
+        assert!(default_cfg.simplification);
+
+        let safe_cfg = TileConfig::mongo_safe_range(12);
+        assert_eq!(safe_cfg.min_zoom, MONGO_SAFE_MIN_ZOOM);
+        assert_eq!(safe_cfg.max_zoom, 12);
+
+        let high_detail_cfg = TileConfig::mongo_high_detail_profile();
+        assert_eq!(high_detail_cfg.min_zoom, MONGO_HIGH_DETAIL_MIN_ZOOM);
+        assert_eq!(high_detail_cfg.max_zoom, MONGO_HIGH_DETAIL_MAX_ZOOM);
+    }
+
+    #[test]
+    fn test_report_mongo_runtime_advisories_reports_low_and_high_zoom_risks() {
+        let reporter = RecordingReporter::new();
+        let config = TileConfig {
+            tile_format: TileFormat::Mvt,
+            min_zoom: 5,
+            max_zoom: 16,
+            base_zoom: None,
+            simplification: true,
+            drop_rate: None,
+            cluster_distance: None,
+            cluster_maxzoom: None,
+            coalesce: false,
+        };
+
+        report_mongo_runtime_advisories(&config, &reporter);
+
+        let messages = reporter.messages();
+        assert!(messages.iter().any(|msg| msg.contains("min_zoom=5")));
+        assert!(messages.iter().any(|msg| msg.contains("z14-z15")));
     }
 }
