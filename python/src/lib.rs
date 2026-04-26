@@ -566,10 +566,10 @@ fn _freestile_postgis_to_mongo(
     let reporter = make_reporter(quiet);
 
     let pg_config = freestiler_core::postgis_input::PostgisConfig::new(conn_str)
-        .batch_size(batch_size.unwrap_or(10000));
+        .batch_size(batch_size.unwrap_or(20000));
 
     let mut mongo_config = freestiler_core::mongo_writer::MongoConfig::new(mongo_uri, mongo_db, mongo_collection)
-        .batch_size(4096)
+        .batch_size(8192)
         .write_concurrency(4)
         .create_indexes(true)
         .upsert(upsert);
@@ -656,7 +656,7 @@ fn _freestile_postgis_to_mongo(
                 mongo_db,
                 mongo_collection,
             );
-            sink_config.batch_size = mongo_batch_size.unwrap_or(4096);
+            sink_config.batch_size = mongo_batch_size.unwrap_or(8192);
             sink_config.create_indexes = mongo_create_indexes.unwrap_or(true);
             sink_config.upsert = upsert;
             let partition_config = freestiler_core::postgis::partition::PartitionConfig {

@@ -103,6 +103,8 @@ Operational guidance:
 
 - Prefer `mongo_profile="recommended"` for the default production path.
 - Use `streaming=True` for bounded memory usage on large tables.
+- The tuned default throughput settings are `batch_size=20000` and
+  Mongo `batch_size=8192`.
 - Avoid Mongo output with `min_zoom <= 5`; very large low-zoom tiles can exceed
   MongoDB's 16 MB document limit.
 

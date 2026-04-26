@@ -8,6 +8,11 @@
 - 模式：`streaming=true`
 - 参数：`batch_size=10000`、`mongo_batch_size=4096`、`create_indexes=true`
 
+说明：
+- 这份报告反映的是当时 profile 横向对比所使用的批量参数基线。
+- 后续已经单独完成批量参数调优，新的默认吞吐参数见
+  [reports/2026-04-26-批量参数压测结论.md](/D:/Code/MyProject/freestiler/reports/2026-04-26-批量参数压测结论.md)。
+
 测试命令基于：
 - [python/scripts/benchmark_mongo_profiles.py](/D:/Code/MyProject/freestiler/python/scripts/benchmark_mongo_profiles.py)
 

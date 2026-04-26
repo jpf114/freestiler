@@ -53,7 +53,7 @@ mod mongo_impl {
         pub fn effective_flush_tile_threshold(&self) -> usize { self.flush_tile_threshold.unwrap_or(4096) }
         pub fn effective_flush_byte_threshold(&self) -> u64 { self.flush_byte_threshold.unwrap_or(64 * 1024 * 1024) }
         pub fn effective_index_fail_is_error(&self) -> bool { true }
-        pub fn effective_batch_size(&self) -> usize { self.batch_size.unwrap_or(4096) }
+        pub fn effective_batch_size(&self) -> usize { self.batch_size.unwrap_or(8192) }
     }
 
     #[derive(Clone)]

@@ -33,7 +33,7 @@ mod mongo_impl {
                 uri: uri.into(),
                 database: db.into(),
                 collection: coll.into(),
-                batch_size: 4096,
+                batch_size: 8192,
                 create_indexes: true,
                 upsert: true,
             }

@@ -38,6 +38,11 @@ python -m twine check dist/*
 If you have access to a real PostGIS and MongoDB environment, run the parity
 check before publishing changes to the custom PostGIS -> Mongo pipeline:
 
+Current tuned defaults for the production-oriented Mongo path:
+
+- PostGIS `batch_size=20000`
+- Mongo `batch_size=8192`
+
 ```bash
 python scripts/verify_cli_python_mongo_parity.py \
   --postgis "10.1.0.16:5433:geoc_data:postgres:postgres" \

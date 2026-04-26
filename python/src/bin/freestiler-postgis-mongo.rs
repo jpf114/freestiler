@@ -49,11 +49,11 @@ struct Cli {
     mongo_profile: MongoProfileArg,
 
     /// Batch size for PostGIS cursor reads
-    #[arg(long, default_value_t = 10_000)]
+    #[arg(long, default_value_t = 20_000)]
     batch_size: usize,
 
     /// Batch size for Mongo writes
-    #[arg(long, default_value_t = 4_096)]
+    #[arg(long, default_value_t = 8_192)]
     mongo_batch_size: usize,
 
     /// Whether to use the streaming pipeline

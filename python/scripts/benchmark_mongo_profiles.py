@@ -31,8 +31,8 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         default=["recommended", "safe", "high_detail"],
     )
-    parser.add_argument("--batch-size", type=int, default=10_000)
-    parser.add_argument("--mongo-batch-size", type=int, default=4_096)
+    parser.add_argument("--batch-size", type=int, default=20_000)
+    parser.add_argument("--mongo-batch-size", type=int, default=8_192)
     parser.add_argument("--streaming", action="store_true", default=False)
     parser.add_argument("--create-indexes", action="store_true", default=False)
     parser.add_argument("--upsert", action="store_true", default=False)
