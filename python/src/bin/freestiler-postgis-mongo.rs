@@ -12,6 +12,7 @@ use freestiler_core::{
 enum MongoProfileArg {
     Recommended,
     Safe,
+    #[value(alias = "high_detail")]
     HighDetail,
 }
 
@@ -235,7 +236,8 @@ fn main() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_mongo_profile, parse_mongo_uri, parse_postgis_conn_str, MongoProfileArg};
+    use super::{apply_mongo_profile, parse_mongo_uri, parse_postgis_conn_str, Cli, MongoProfileArg};
+    use clap::Parser;
     use freestiler_core::engine::{
         MONGO_HIGH_DETAIL_MAX_ZOOM, MONGO_HIGH_DETAIL_MIN_ZOOM, MONGO_RECOMMENDED_MAX_ZOOM,
         MONGO_RECOMMENDED_MIN_ZOOM, MONGO_SAFE_MIN_ZOOM,
@@ -287,5 +289,27 @@ mod tests {
         let high_detail = apply_mongo_profile(MongoProfileArg::HighDetail);
         assert_eq!(high_detail.min_zoom, MONGO_HIGH_DETAIL_MIN_ZOOM);
         assert_eq!(high_detail.max_zoom, MONGO_HIGH_DETAIL_MAX_ZOOM);
+    }
+
+    #[test]
+    fn accepts_high_detail_alias_with_underscore() {
+        let cli = Cli::try_parse_from([
+            "freestiler-postgis-mongo",
+            "--postgis",
+            "10.1.0.16:5433:geoc_data:postgres:postgres",
+            "--sql",
+            "SELECT 1",
+            "--mongo",
+            "localhost:27017",
+            "--mongo-db",
+            "tiles",
+            "--mongo-collection",
+            "cities",
+            "--mongo-profile",
+            "high_detail",
+        ])
+        .expect("parse cli");
+
+        assert_eq!(cli.mongo_profile, MongoProfileArg::HighDetail);
     }
 }
