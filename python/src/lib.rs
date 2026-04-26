@@ -29,6 +29,95 @@ impl ProgressReporter for PyReporter {
     }
 }
 
+#[cfg(all(feature = "postgis", feature = "mongodb-out"))]
+fn apply_mongo_profile(
+    tile_format: &str,
+    min_zoom: u8,
+    max_zoom: u8,
+    base_zoom: i32,
+    do_simplify: bool,
+    drop_rate: f64,
+    cluster_distance: f64,
+    cluster_maxzoom: i32,
+    do_coalesce: bool,
+    mongo_profile: Option<&str>,
+) -> PyResult<TileConfig> {
+    let mut config = TileConfig::from_binding_params(
+        tile_format,
+        min_zoom,
+        max_zoom,
+        base_zoom,
+        do_simplify,
+        drop_rate,
+        cluster_distance,
+        cluster_maxzoom,
+        do_coalesce,
+    );
+
+    match mongo_profile {
+        None => Ok(config),
+        Some("recommended") => {
+            let preset = TileConfig::mongo_recommended_default();
+            config.min_zoom = preset.min_zoom;
+            config.max_zoom = preset.max_zoom;
+            config.tile_format = preset.tile_format;
+            config.simplification = preset.simplification;
+            config.drop_rate = preset.drop_rate;
+            config.cluster_distance = preset.cluster_distance;
+            config.cluster_maxzoom = preset.cluster_maxzoom;
+            config.coalesce = preset.coalesce;
+            Ok(config)
+        }
+        Some("safe") => {
+            let preset = TileConfig::mongo_safe_range(max_zoom);
+            config.min_zoom = preset.min_zoom;
+            config.max_zoom = preset.max_zoom;
+            config.tile_format = preset.tile_format;
+            config.simplification = preset.simplification;
+            config.drop_rate = preset.drop_rate;
+            config.cluster_distance = preset.cluster_distance;
+            config.cluster_maxzoom = preset.cluster_maxzoom;
+            config.coalesce = preset.coalesce;
+            Ok(config)
+        }
+        Some("high_detail") => {
+            let preset = TileConfig::mongo_high_detail_profile();
+            config.min_zoom = preset.min_zoom;
+            config.max_zoom = preset.max_zoom;
+            config.tile_format = preset.tile_format;
+            config.simplification = preset.simplification;
+            config.drop_rate = preset.drop_rate;
+            config.cluster_distance = preset.cluster_distance;
+            config.cluster_maxzoom = preset.cluster_maxzoom;
+            config.coalesce = preset.coalesce;
+            Ok(config)
+        }
+        Some(other) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Invalid mongo_profile '{}'. Expected one of: recommended, safe, high_detail",
+            other
+        ))),
+    }
+}
+
+#[cfg(all(feature = "postgis", feature = "mongodb-out"))]
+fn report_selected_mongo_profile(
+    reporter: &dyn ProgressReporter,
+    quiet: bool,
+    mongo_profile: Option<&str>,
+    config: &TileConfig,
+) {
+    if quiet {
+        return;
+    }
+
+    if let Some(profile) = mongo_profile {
+        reporter.report(&format!(
+            "  Mongo profile: {} (zoom {}..{}, format {:?})",
+            profile, config.min_zoom, config.max_zoom, config.tile_format
+        ));
+    }
+}
+
 fn parse_layers_from_py(
     py: Python<'_>,
     layers: &[Py<PyAny>],
@@ -443,7 +532,7 @@ fn _freestile_postgis(
     mongo_write_concurrency=None, mongo_create_indexes=None,
     force_large_mode=None, large_mode_threshold=None,
     mongo_flush_min_tiles=None, mongo_flush_max_bytes=None,
-    streaming=None))]
+    streaming=None, mongo_profile=None))]
 fn _freestile_postgis_to_mongo(
     conn_str: &str,
     sql: &str,
@@ -472,6 +561,7 @@ fn _freestile_postgis_to_mongo(
     mongo_flush_min_tiles: Option<usize>,
     mongo_flush_max_bytes: Option<u64>,
     streaming: Option<bool>,
+    mongo_profile: Option<&str>,
 ) -> PyResult<String> {
     let reporter = make_reporter(quiet);
 
@@ -504,10 +594,11 @@ fn _freestile_postgis_to_mongo(
             freestiler_core::tiler::mask_conn_str(conn_str)));
     }
 
-    let config = TileConfig::from_binding_params(
+    let config = apply_mongo_profile(
         tile_format, min_zoom, max_zoom, base_zoom, do_simplify,
-        drop_rate, cluster_distance, cluster_maxzoom, do_coalesce,
-    );
+        drop_rate, cluster_distance, cluster_maxzoom, do_coalesce, mongo_profile,
+    )?;
+    report_selected_mongo_profile(reporter.as_ref(), quiet, mongo_profile, &config);
 
     let threshold = large_mode_threshold.unwrap_or(MONGO_BY_ZOOM_FEATURE_THRESHOLD);
     let maybe_small_layers = if force_large_mode.is_none() && !streaming.unwrap_or(false) {
@@ -515,8 +606,8 @@ fn _freestile_postgis_to_mongo(
             &pg_config,
             sql,
             layer_name,
-            min_zoom,
-            max_zoom,
+            config.min_zoom,
+            config.max_zoom,
             geom_column,
             threshold,
         )
@@ -539,7 +630,7 @@ fn _freestile_postgis_to_mongo(
         let layers = match maybe_small_layers {
             Some(l) => l,
             None => freestiler_core::postgis_input::postgis_query_to_layers_with_geom(
-                conn_str, sql, layer_name, min_zoom, max_zoom, batch_size, geom_column,
+                conn_str, sql, layer_name, config.min_zoom, config.max_zoom, batch_size, geom_column,
             )
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?,
         };
@@ -569,7 +660,7 @@ fn _freestile_postgis_to_mongo(
             sink_config.create_indexes = mongo_create_indexes.unwrap_or(true);
             sink_config.upsert = upsert;
             let partition_config = freestiler_core::postgis::partition::PartitionConfig {
-                partition_zoom: max_zoom,
+                partition_zoom: config.max_zoom,
                 metatile_rows: 64,
             };
             match freestiler_core::run_postgis_to_mongo_stream(
