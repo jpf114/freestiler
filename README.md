@@ -35,6 +35,11 @@ Published PyPI wheels currently target Python 3.9 through 3.14.
 
 See the [Python Setup](https://walker-data.com/freestiler/articles/python.html) article for more details.
 
+The Python package also includes a custom `PostGIS -> MongoDB` tile pipeline
+for direct vector tile storage. See
+[`python/README.md`](python/README.md) for the current Python API, CLI, and
+`mongo_profile` guidance.
+
 ## Quick start
 
 The main function is `freestile()`. Let's tile the North Carolina counties dataset that ships with sf:

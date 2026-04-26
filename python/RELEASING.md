@@ -8,6 +8,8 @@ Current wheel policy:
 - Published wheels include the default feature set.
 - GeoParquet support is included.
 - DuckDB support is included.
+- PostGIS support is included.
+- MongoDB output support is included.
 - Supported wheel targets are Python 3.9 through 3.14.
 
 ## Before releasing
@@ -27,8 +29,26 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
 python -m pytest -q tests
+cargo test --manifest-path Cargo.toml --bin freestiler-postgis-mongo
+python scripts/verify_installed_postgis_mongo_binding.py
 python -m maturin build --release --sdist --out dist
 python -m twine check dist/*
+```
+
+If you have access to a real PostGIS and MongoDB environment, run the parity
+check before publishing changes to the custom PostGIS -> Mongo pipeline:
+
+```bash
+python scripts/verify_cli_python_mongo_parity.py \
+  --postgis "10.1.0.16:5433:geoc_data:postgres:postgres" \
+  --sql "SELECT * FROM public.ht_tyg5c32ihg_sys_ht_mark ORDER BY ogc_fid LIMIT 100" \
+  --mongo "localhost:27017" \
+  --mongo-db "freestiler_test" \
+  --cli-collection "release_cli_parity" \
+  --python-collection "release_python_parity" \
+  --mongo-profile recommended \
+  --streaming \
+  --cleanup
 ```
 
 ## TestPyPI upload
