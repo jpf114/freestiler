@@ -27,9 +27,9 @@ struct Cli {
     #[arg(long)]
     sql: String,
 
-    /// MongoDB connection URI
-    #[arg(long)]
-    mongo_uri: String,
+    /// MongoDB connection in host:port or full mongodb:// URI form
+    #[arg(long = "mongo", alias = "mongo-uri")]
+    mongo: String,
 
     /// MongoDB database name
     #[arg(long)]
@@ -43,7 +43,7 @@ struct Cli {
     #[arg(long, default_value = "default")]
     layer_name: String,
 
-    /// Mongo tuning preset
+    /// Mongo tuning preset: recommended=mvt z10..12, safe=mvt z6..12, high-detail=mvt z14..15
     #[arg(long, value_enum, default_value = "recommended")]
     mongo_profile: MongoProfileArg,
 
@@ -107,6 +107,21 @@ fn parse_postgis_conn_str(input: &str) -> Result<String, String> {
     ))
 }
 
+fn parse_mongo_uri(input: &str) -> Result<String, String> {
+    if input.contains("://") {
+        return Ok(input.to_string());
+    }
+
+    let parts: Vec<&str> = input.split(':').collect();
+    if parts.len() != 2 || parts.iter().any(|part| part.is_empty()) {
+        return Err(
+            "Invalid --mongo value. Expected host:port or mongodb://...".to_string(),
+        );
+    }
+
+    Ok(format!("mongodb://{}", input))
+}
+
 fn apply_mongo_profile(profile: MongoProfileArg) -> TileConfig {
     match profile {
         MongoProfileArg::Recommended => TileConfig::mongo_recommended_default(),
@@ -136,6 +151,7 @@ fn main() -> Result<(), String> {
     let reporter = CliReporter { quiet: cli.quiet };
 
     let conn_str = parse_postgis_conn_str(&cli.postgis)?;
+    let mongo_uri = parse_mongo_uri(&cli.mongo)?;
     let pg_config = PostgisConfig::new(&conn_str).batch_size(cli.batch_size);
     let config = apply_mongo_profile(cli.mongo_profile);
 
@@ -149,7 +165,7 @@ fn main() -> Result<(), String> {
     if cli.streaming {
         reporter.report("Path: streaming PostGIS -> Mongo");
         let mut sink_config =
-            MongoSinkConfig::new(&cli.mongo_uri, &cli.mongo_db, &cli.mongo_collection);
+            MongoSinkConfig::new(&mongo_uri, &cli.mongo_db, &cli.mongo_collection);
         sink_config.batch_size = cli.mongo_batch_size;
         sink_config.create_indexes = cli.create_indexes;
         sink_config.upsert = cli.upsert;
@@ -174,7 +190,7 @@ fn main() -> Result<(), String> {
     }
 
     reporter.report("Path: in-memory/by-zoom PostGIS -> Mongo");
-    let mongo_config = MongoConfig::new(&cli.mongo_uri, &cli.mongo_db, &cli.mongo_collection)
+    let mongo_config = MongoConfig::new(&mongo_uri, &cli.mongo_db, &cli.mongo_collection)
         .batch_size(cli.mongo_batch_size)
         .create_indexes(cli.create_indexes)
         .upsert(cli.upsert);
@@ -219,7 +235,7 @@ fn main() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_mongo_profile, parse_postgis_conn_str, MongoProfileArg};
+    use super::{apply_mongo_profile, parse_mongo_uri, parse_postgis_conn_str, MongoProfileArg};
     use freestiler_core::engine::{
         MONGO_HIGH_DETAIL_MAX_ZOOM, MONGO_HIGH_DETAIL_MIN_ZOOM, MONGO_RECOMMENDED_MAX_ZOOM,
         MONGO_RECOMMENDED_MIN_ZOOM, MONGO_SAFE_MIN_ZOOM,
@@ -244,6 +260,18 @@ mod tests {
             actual,
             "postgresql://postgres:postgres@10.1.0.16:5433/geoc_data"
         );
+    }
+
+    #[test]
+    fn parses_short_mongo_connection_string() {
+        let actual = parse_mongo_uri("localhost:27017").unwrap();
+        assert_eq!(actual, "mongodb://localhost:27017");
+    }
+
+    #[test]
+    fn keeps_full_mongo_url_unchanged() {
+        let actual = parse_mongo_uri("mongodb://localhost:27017").unwrap();
+        assert_eq!(actual, "mongodb://localhost:27017");
     }
 
     #[test]
