@@ -10,7 +10,7 @@ use crate::duckdb_util::{self, DuckDbValueKind};
 use crate::tile_spool::unique_suffix;
 use crate::engine::{ProgressReporter, TileConfig};
 use crate::pmtiles_writer::{self, LayerMeta, TileFormat};
-use crate::tiler::{Feature, Geometry, PropertyValue, TileCoord};
+use crate::tiler::{Feature, Geometry, TileCoord};
 use crate::{coalesce, mlt, mvt, tiler};
 
 const STREAMING_AUTO_THRESHOLD: u64 = 1_000_000;
