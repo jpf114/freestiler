@@ -11,6 +11,13 @@ try:
 except ImportError:
     _HAS_POSTGIS = False
 
+try:
+    from freestiler._freestiler import _freestile_postgis_to_mongo  # noqa: F401
+
+    _HAS_POSTGIS_MONGO = True
+except ImportError:
+    _HAS_POSTGIS_MONGO = False
+
 
 requires_postgis = pytest.mark.skipif(
     not _HAS_POSTGIS, reason="PostGIS feature not compiled"
@@ -25,8 +32,13 @@ def test_postgis_binding_is_exposed():
 
 @requires_postgis
 def test_postgis_mongo_output_requires_mongodb_feature():
-    """PostGIS-only builds should fail fast on MongoDB output requests."""
-    with pytest.raises(RuntimeError, match="PostGIS \\+ MongoDB support"):
+    """Mongo output should either fail fast on missing feature or reach the backend."""
+    expected = (
+        "Cannot connect to PostgreSQL|password authentication failed"
+        if _HAS_POSTGIS_MONGO
+        else "PostGIS \\+ MongoDB support"
+    )
+    with pytest.raises(RuntimeError, match=expected):
         freestile_postgis(
             "postgresql://user:pass@localhost:5432/gis",
             "SELECT 1",
